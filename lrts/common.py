@@ -127,8 +127,39 @@ def get_all_sections(book_id, verbose=True, use_cache=True):
     return meta, sections
 
 
+def _looks_bad_name(name):
+    """书名是否是不规范的占位名（如 book_123）。"""
+    if not name or not str(name).strip():
+        return True
+    return bool(re.fullmatch(r"book_\d+", str(name).strip()))
+
+
 def get_book_name(book_id):
-    """拿书名。优先本地已下目录清单 / 缓存，其次请求 H5。失败返回 None。"""
+    """拿书名。优先真实来源（抓包缓存 / H5），跳过 book_xxx 之类的占位名。
+
+    注意：不再优先信已下目录的 _manifest.json——它可能残留 book_<id> 占位名，
+    一旦残留会导致目录名一直修不正（文件散落）。
+    """
+    # 1) sniffer 抓 bookInfoPage 时缓存的书名（最可靠，App 接口不受 H5 风控影响）
+    sp = os.path.join(os.path.dirname(CACHE_DIR), "samples", f"name_{book_id}.json")
+    if os.path.exists(sp):
+        try:
+            j = json.load(open(sp, encoding="utf-8"))
+            if j.get("name") and not _looks_bad_name(j["name"]):
+                return j["name"]
+        except Exception:
+            pass
+    # 2) 本地缓存的书名
+    cp = os.path.join(CACHE_DIR, f"name_{book_id}.json")
+    if os.path.exists(cp):
+        try:
+            j = json.load(open(cp, encoding="utf-8"))
+            if time.time() - j.get("_ts", 0) < CACHE_TTL and j.get("name") \
+               and not _looks_bad_name(j["name"]):
+                return j["name"]
+        except Exception:
+            pass
+    # 3) 已下目录里若已有规范书名，也可用（但跳过 book_xxx 占位名）
     audio_out = os.path.join(DATA_DIR, "audio")
     if os.path.isdir(audio_out):
         for d in os.listdir(audio_out):
@@ -136,27 +167,12 @@ def get_book_name(book_id):
             if os.path.exists(mf):
                 try:
                     j = json.load(open(mf, encoding="utf-8"))
-                    if str(j.get("bookId")) == str(book_id) and j.get("book"):
+                    if str(j.get("bookId")) == str(book_id) and j.get("book") \
+                       and not _looks_bad_name(j["book"]):
                         return j["book"]
                 except Exception:
                     pass
-    # sniffer 抓 bookInfoPage 时缓存的书名（最可靠，App 接口不受 H5 风控影响）
-    sp = os.path.join(os.path.dirname(CACHE_DIR), "samples", f"name_{book_id}.json")
-    if os.path.exists(sp):
-        try:
-            j = json.load(open(sp, encoding="utf-8"))
-            if j.get("name"):
-                return j["name"]
-        except Exception:
-            pass
-    cp = os.path.join(CACHE_DIR, f"name_{book_id}.json")
-    if os.path.exists(cp):
-        try:
-            j = json.load(open(cp, encoding="utf-8"))
-            if time.time() - j.get("_ts", 0) < CACHE_TTL and j.get("name"):
-                return j["name"]
-        except Exception:
-            pass
+    # 4) 请求 H5 页面
     try:
         _, body = http(f"{H5}/book/{book_id}", headers={"Referer": H5},
                        timeout=20, retries=1)

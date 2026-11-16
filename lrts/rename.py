@@ -105,11 +105,27 @@ def verify_and_fix(dst_dir, book, book_name=None):
         target = os.path.join(OUT, C.safe_dirname(real_name))
         if os.path.abspath(target) != os.path.abspath(dst_dir):
             try:
-                # 若目标已存在（并发/重复），合并进去
+                # 若目标已存在（书名目录已建），把文件搬进去——同名不覆盖，只搬缺失的
                 if os.path.exists(target):
+                    moved = 0
                     for f in os.listdir(dst_dir):
-                        os.replace(os.path.join(dst_dir, f), os.path.join(target, f))
-                    os.rmdir(dst_dir)
+                        src_f = os.path.join(dst_dir, f)
+                        dst_f = os.path.join(target, f)
+                        if os.path.isdir(src_f):
+                            # 子目录（罕见）整体搬，不覆盖
+                            if not os.path.exists(dst_f):
+                                os.replace(src_f, dst_f); moved += 1
+                        else:
+                            if not os.path.exists(dst_f):
+                                os.replace(src_f, dst_f); moved += 1
+                            # 同名文件：目标已有，说明是同一集（内容一致），保留目标、丢弃源副本
+                    # 只有在源目录已空时才删壳；否则保留并警告（防丢）
+                    remain = os.listdir(dst_dir)
+                    if not remain:
+                        os.rmdir(dst_dir)
+                    else:
+                        result["problems"].append(
+                            f"合并后旧目录仍有 {len(remain)} 个文件（可能重名冲突），已保留 {dst_dir}")
                 else:
                     os.rename(dst_dir, target)
                 print(f"  [自检] 书目录名不规范，已修正：{dname} -> {real_name}")
