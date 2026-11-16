@@ -98,11 +98,13 @@ def _capture_menu(flow):
     data = j.get("data") or {}
     book = None
     items = []
+    total_sections = None  # 接口返回的真实总集数
 
     # bookInfoPage: data.detail.sections + data.tabList[目录].data.tracks[]
     if "bookInfoPage" in (flow.request.path or ""):
         det = data.get("detail") or {}
         book = det.get("id")
+        total_sections = det.get("sections")
         # 顺手存书名，供下载器给目录命名（H5 页面常 404，App 接口最可靠）
         if book and det.get("name"):
             try:
@@ -116,35 +118,48 @@ def _capture_menu(flow):
             if t.get("name") == "目录":
                 items = (t.get("data") or {}).get("tracks") or []
                 break
-    # ClientGetBookResource: bookId + list[]
+    # ClientGetBookResource: bookId + list[] + sections(总集数)
     elif "getbookresource" in (flow.request.path or "").lower():
         book = j.get("bookId")
         items = j.get("list") or []
+        total_sections = j.get("sections")
 
     if not book:
         # 从请求 query 兜底取 bookId
         m = re.search(r"[?&](?:bookId|id)=(\d+)", flow.request.path or "")
         book = m.group(1) if m else None
-    if not book or not items:
+    if not book:
         return
 
+    # 累积式存储：存为 {_ts, meta:{total}, sections:{...}}，与下载器缓存格式一致
     path = os.path.join(SAMPLES_DIR, f"menu_{book}.json")
-    store = {}
+    store = {"_ts": 0, "meta": {"total": None}, "sections": {}}
     if os.path.exists(path):
         try:
-            store = json.load(open(path, encoding="utf-8"))
+            d = json.load(open(path, encoding="utf-8"))
+            if isinstance(d.get("sections"), dict):
+                store = d
+            else:
+                # 兼容旧的扁平格式 {"1":"第N集",...}
+                store["sections"] = {str(k): v for k, v in d.items() if str(k).isdigit()}
         except Exception:
-            store = {}
+            pass
+    # 记录真实总集数（一旦拿到就固定）
+    if total_sections:
+        store.setdefault("meta", {})["total"] = int(total_sections)
     added = 0
     for it in items:
         sec = it.get("section")
         name = it.get("name")
-        if sec is not None and name and str(sec) not in store:
-            store[str(sec)] = name
+        if sec is not None and name and str(sec) not in store["sections"]:
+            store["sections"][str(sec)] = name
             added += 1
-    if added or not os.path.exists(path):
-        json.dump(store, open(path, "w", encoding="utf-8"), ensure_ascii=False)
-        print(f"[menu] 累计目录 book={book}: +{added}，共 {len(store)} 集 -> {path}")
+    store["_ts"] = time.time()
+    json.dump(store, open(path, "w", encoding="utf-8"), ensure_ascii=False)
+    if added or total_sections:
+        tot = (store.get("meta") or {}).get("total")
+        print(f"[menu] 累积目录 book={book}: +{added}，已缓存 {len(store['sections'])} 集"
+              f"（全书 {tot} 集）-> {path}")
 
 
 def response(flow):
