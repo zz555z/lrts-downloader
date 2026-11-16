@@ -36,44 +36,19 @@ import urllib.parse
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SNIFFER = os.path.join(ROOT, "addons", "sniffer.py")
 SAMPLES = os.path.join(ROOT, "data", "samples", "req_samples.jsonl")
-# mitmproxy 配置目录：优先复用"已被系统信任"的证书目录，避免新生成的 CA 未受信导致抓不到
-DEFAULT_CONFDIR = os.path.join(tempfile.gettempdir(), "lrts_mitm_conf")
-# 可能已受信的候选目录（本项目同级旧目录 / 项目内）
-CANDIDATE_CONFDIRS = [
-    os.path.join(os.path.dirname(ROOT), "app-scrape", ".mitmproxy"),
-    os.path.join(ROOT, ".mitmproxy"),
-    DEFAULT_CONFDIR,
-]
-
-
-def _cert_trusted(confdir):
-    """判断 confdir 下的 mitmproxy CA 是否已被系统信任。"""
-    cert = os.path.join(confdir, "mitmproxy-ca-cert.pem")
-    if not os.path.exists(cert):
-        return False
-    try:
-        r = subprocess.run(["security", "verify-cert", "-c", cert],
-                           capture_output=True, text=True)
-        return "successful" in (r.stdout + r.stderr)
-    except Exception:
-        return False
+# mitmproxy 配置目录：使用本项目自己的 .mitmproxy（独立、不复用外部证书）。
+# 若这里还没有证书，certsetup 会在启动时生成并引导你安装信任。
+DEFAULT_CONFDIR = os.path.join(ROOT, ".mitmproxy")
 
 
 def resolve_confdir(explicit=None):
-    """选一个可用的 confdir。
+    """返回本项目使用的 confdir。
 
-    - 显式指定：优先用它（若里面还没证书，mitmproxy 会自动生成，但需你信任）
-    - 否则：优先返回"已受信"的候选目录；都不受信时用默认目录
+    - 显式指定：用它
+    - 否则：用项目内 `.mitmproxy`（不读取/依赖任何外部旧证书目录）
+    证书是否存在、是否受信，交给 certsetup.ensure_cert 处理（没有就引导安装）。
     """
-    if explicit:
-        return explicit
-    for d in CANDIDATE_CONFDIRS:
-        if _cert_trusted(d):
-            print(f"[*] 复用已受信任的证书目录：{d}")
-            return d
-    print("[!] 没找到已受信任的 mitmproxy 证书，将使用默认目录生成新证书")
-    print("    首次使用需按 README「信任证书」步骤操作，否则抓不到 HTTPS。")
-    return DEFAULT_CONFDIR
+    return explicit or DEFAULT_CONFDIR
 
 
 # ---------------------------------------------------------------- 系统代理

@@ -15,3 +15,7 @@ venv/
 
 # 系统
 .DS_Store
+
+
+# mitmproxy 证书（本地生成，勿上传）
+.mitmproxy/
