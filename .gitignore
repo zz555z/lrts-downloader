@@ -19,3 +19,5 @@ venv/
 
 # mitmproxy 证书（本地生成，勿上传）
 .mitmproxy/
+
+data/backup/
