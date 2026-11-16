@@ -72,24 +72,45 @@ def fetch_menu_page(book_id, page, retries=3):
         return {}
 
 
+def _load_menu_cache(book_id):
+    """读取目录缓存，返回 {int: name} 或 None。
+
+    兼容两处缓存：sniffer 抓包存的 data/samples/menu_<id>.json
+    与 getBookMenu 抓取缓存的 data/cache/menu_<id>.json。
+    samples 里的优先级更高（App 接口抓的，不受风控影响）。
+    """
+    samples_p = os.path.join(os.path.dirname(CACHE_DIR), "samples", f"menu_{book_id}.json")
+    cache_p = os.path.join(CACHE_DIR, f"menu_{book_id}.json")
+    for p in (samples_p, cache_p):
+        if not os.path.exists(p):
+            continue
+        try:
+            d = json.load(open(p, encoding="utf-8"))
+            # samples 格式: {"1":"第001集_xxx", ...}
+            # cache 格式:   {"_ts":..,"meta":..,"sections":{"1":..}}
+            raw = d.get("sections") if isinstance(d, dict) and "sections" in d else d
+            if raw:
+                return {int(k): v for k, v in raw.items() if str(k).isdigit()}
+        except Exception:
+            continue
+    return None
+
+
 def get_all_sections(book_id, verbose=True, use_cache=True):
     """拉全书目录，返回 (meta, sections)。
 
     meta     : {"total": 总集数}
     sections : {section:int -> name:str}（name 为 App 原始显示名，如 "第017集_试探"）
 
-    带本地缓存（默认 7 天）。若接口被风控（status=114），抛 RuntimeError。
+    优先用本地缓存（抓包缓存 / 7 天前的 getBookMenu 缓存）。
+    若接口被风控（status=114），抛 RuntimeError。
     """
-    cache_path = os.path.join(CACHE_DIR, f"menu_{book_id}.json")
-    if use_cache and os.path.exists(cache_path):
-        try:
-            data = json.load(open(cache_path, encoding="utf-8"))
-            if time.time() - data.get("_ts", 0) < CACHE_TTL and data.get("sections"):
-                if verbose:
-                    print(f"  [缓存] {book_id}: {len(data['sections'])} 集")
-                return data["meta"], {int(k): v for k, v in data["sections"].items()}
-        except Exception:
-            pass
+    if use_cache:
+        cached = _load_menu_cache(book_id)
+        if cached:
+            if verbose:
+                print(f"  [缓存] {book_id}: {len(cached)} 集")
+            return {"total": len(cached)}, cached
 
     sections: dict[int, str] = {}
     meta = {"total": None}
@@ -233,3 +254,65 @@ def safe_dirname(s, n=100):
     s = s or ""
     s = re.sub(r'[\\/:*?"<>\r\n]', "", s).strip()
     return s[:n] or "untitled"
+
+
+# ---- 交互：询问下载范围（cli 与 grab_sc 共用）----------------------------
+def _input_or_none(prompt):
+    """input() 的包装：EOF 时返回 None。"""
+    try:
+        return input(prompt)
+    except EOFError:
+        return None
+
+
+def ask_range(total):
+    """交互式询问下载范围。返回 (start, end)。
+
+    total 已知总集数时给出提示。
+    - 选 1：全本（start=1, end=total 或 0 表示让下载器自动探测）
+    - 选 2：自定义 a-b
+    输入流结束（EOF）或连续空输入时，安全回退到「全本」，绝不无限循环。
+    """
+    total_txt = f"（全书共 {total} 集）" if total else ""
+    print("\n要下载多少集？" + total_txt)
+    print("  1) 全本")
+    print("  2) 自定义范围（如 1-2 表示第1集到第2集）")
+    eof_streak = 0
+    while True:
+        line = _input_or_none("请输入 1 或 2 后回车：")
+        if line is None:
+            print("\n[!] 输入已结束，默认下载全本")
+            return 1, (total or 0)
+        choice = line.strip()
+        if choice == "":
+            eof_streak += 1
+            if eof_streak >= 3:
+                print("\n[!] 连续无输入，默认下载全本")
+                return 1, (total or 0)
+            continue
+        eof_streak = 0
+        if choice == "1":
+            return 1, (total or 0)
+        if choice == "2":
+            while True:
+                s = _input_or_none("请输入起始集号：")
+                if s is None:
+                    print("\n[!] 输入已结束，默认下载全本")
+                    return 1, (total or 0)
+                e = _input_or_none("请输入结束集号：")
+                if e is None:
+                    print("\n[!] 输入已结束，默认下载全本")
+                    return 1, (total or 0)
+                try:
+                    start, end = int(s.strip()), int(e.strip())
+                except ValueError:
+                    print("  请输入数字，例如起始 1、结束 2")
+                    continue
+                if start < 1 or end < start:
+                    print(f"  范围不合法：应满足 1 <= 起始 <= 结束（你输入 {start}-{end}）")
+                    continue
+                if total and end > total:
+                    print(f"  结束集号超过全书总集数 {total}，已按 {total} 处理")
+                    end = total
+                return start, end
+        print("  请输入 1 或 2")

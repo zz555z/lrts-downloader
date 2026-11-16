@@ -21,69 +21,6 @@ from lrts import download as D
 from lrts import rename as R
 
 
-def _read_line(prompt):
-    """读一行输入。返回 None 表示输入流已结束（EOF），便于安全退出。"""
-    try:
-        line = input(prompt)
-    except EOFError:
-        return None
-    return line
-
-
-def _ask_range(total):
-    """交互式询问下载范围。返回 (start, end)。
-
-    total 已知总集数时给出提示；未知则仍可自定义。
-    - 选 1：全本（start=1, end=total 或 0 表示让下载器自动探测）
-    - 选 2：自定义 a-b
-
-    输入流结束（EOF）或连续空输入时，安全回退到「全本」，绝不无限循环。
-    """
-    total_txt = f"（全书共 {total} 集）" if total else ""
-    print("\n要下载多少集？" + total_txt)
-    print("  1) 全本")
-    print("  2) 自定义范围（如 1-2 表示第1集到第2集）")
-    eof_streak = 0
-    while True:
-        line = _read_line("请输入 1 或 2 后回车：")
-        if line is None:                 # EOF：直接按全本处理
-            print("\n[!] 输入已结束，默认下载全本")
-            return 1, (total or 0)
-        choice = line.strip()
-        if choice == "":
-            eof_streak += 1
-            if eof_streak >= 3:
-                print("\n[!] 连续无输入，默认下载全本")
-                return 1, (total or 0)
-            continue
-        eof_streak = 0
-        if choice == "1":
-            return 1, (total or 0)
-        if choice == "2":
-            while True:
-                s = _read_line("请输入起始集号：")
-                if s is None:
-                    print("\n[!] 输入已结束，默认下载全本")
-                    return 1, (total or 0)
-                e = _read_line("请输入结束集号：")
-                if e is None:
-                    print("\n[!] 输入已结束，默认下载全本")
-                    return 1, (total or 0)
-                try:
-                    start, end = int(s.strip()), int(e.strip())
-                except ValueError:
-                    print("  请输入数字，例如起始 1、结束 2")
-                    continue
-                if start < 1 or end < start:
-                    print(f"  范围不合法：应满足 1 <= 起始 <= 结束（你输入 {start}-{end}）")
-                    continue
-                if total and end > total:
-                    print(f"  结束集号超过全书总集数 {total}，已按 {total} 处理")
-                    end = total
-                return start, end
-        print("  请输入 1 或 2")
-
-
 def cmd_dl(args):
     start, end = args.start, args.end
     # 未显式指定范围（start 默认 1 且 end 默认 0）且为交互终端时，询问用户
@@ -96,7 +33,7 @@ def cmd_dl(args):
             total = meta.get("total") or 0
         except Exception:
             pass
-        start, end = _ask_range(total)
+        start, end = C.ask_range(total)
         print(f"[*] 已选择：第 {start} 集 ~ {'全本' if not end else end} 集\n")
     D.download_book(args.book, start=start, end=end,
                     dry=args.dry, no_menu=args.no_menu, name=args.name)

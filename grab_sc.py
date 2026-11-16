@@ -259,7 +259,7 @@ def _run_download(book):
             total = meta.get("total") or 0
         except Exception:
             pass
-        start, end = _ask_range(total)
+        start, end = C.ask_range(total)
     else:
         print("[*] 非交互环境，默认下载全本")
     try:
@@ -273,70 +273,17 @@ def _run_download(book):
     return 0
 
 
-def _ask_range(total):
-    """询问下载范围（与 cli.py 中一致）。"""
-    total_txt = f"（全书共 {total} 集）" if total else ""
-    print("\n要下载多少集？" + total_txt)
-    print("  1) 全本")
-    print("  2) 自定义范围（如 1-2 表示第1集到第2集）")
-    eof_streak = 0
-    while True:
-        try:
-            line = input("请输入 1 或 2 后回车：")
-        except EOFError:
-            print("\n[!] 输入已结束，默认下载全本")
-            return 1, (total or 0)
-        choice = line.strip()
-        if choice == "":
-            eof_streak += 1
-            if eof_streak >= 3:
-                print("\n[!] 连续无输入，默认下载全本")
-                return 1, (total or 0)
-            continue
-        eof_streak = 0
-        if choice == "1":
-            return 1, (total or 0)
-        if choice == "2":
-            while True:
-                s = _input_or_none("请输入起始集号：")
-                if s is None:
-                    print("\n[!] 输入已结束，默认下载全本")
-                    return 1, (total or 0)
-                e = _input_or_none("请输入结束集号：")
-                if e is None:
-                    print("\n[!] 输入已结束，默认下载全本")
-                    return 1, (total or 0)
-                try:
-                    start, end = int(s.strip()), int(e.strip())
-                except ValueError:
-                    print("  请输入数字，例如起始 1、结束 2")
-                    continue
-                if start < 1 or end < start:
-                    print(f"  范围不合法：应满足 1 <= 起始 <= 结束（你输入 {start}-{end}）")
-                    continue
-                if total and end > total:
-                    print(f"  结束集号超过全书总集数 {total}，已按 {total} 处理")
-                    end = total
-                return start, end
-        print("  请输入 1 或 2")
-
-
-def _input_or_none(prompt):
-    """input() 的包装：EOF 时返回 None。"""
-    try:
-        return input(prompt)
-    except EOFError:
-        return None
-
-
 def run():
     """程序主入口：抓 sc → 自动下载。"""
-    res = main()           # main 内部 handle 抓包+清理，返回 (status, book)
+    res = main()           # main 内部 handle 抓包+清理，返回 (status, book) 或 int
     status, book = res if isinstance(res, tuple) else (res, None)
     if status == "got" and book:
-        rc = _run_download(book)
-        return rc
-    return 0 if status == 0 else (130 if status == "interrupted" else 1)
+        return _run_download(book)
+    if status in ("fail", "interrupted"):
+        return 130 if status == "interrupted" else 1
+    if isinstance(status, int):
+        return status      # 0 / 2(证书未完成) 原样返回
+    return 1
 
 
 if __name__ == "__main__":
