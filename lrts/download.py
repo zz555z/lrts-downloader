@@ -116,34 +116,6 @@ def download_one(item, dst_dir, sec_to_name, book_name):
     return sec, None, 0, f"ERR {type(last).__name__}:{last}"
 
 
-def _backup_before_run(dst_dir, book, keep=3):
-    """下载前把已存在书目录快照到 data/backup/，防止误删/误操作丢文件。
-
-    只备份已存在且有音频的目录；每次一份时间戳快照，最多保留最近 keep 份。
-    失败静默（不影响下载）。
-    """
-    try:
-        import glob
-        import shutil
-        if not os.path.isdir(dst_dir):
-            return
-        if not glob.glob(os.path.join(dst_dir, "第*集*.m4a")):
-            return  # 还没文件，无需备份
-        bdir = os.path.join(C.DATA_DIR, "backup")
-        os.makedirs(bdir, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        base = os.path.basename(dst_dir.rstrip("/"))
-        snap = os.path.join(bdir, f"{base}__{stamp}")
-        shutil.copytree(dst_dir, snap)
-        print(f"[备份] 已将现有目录快照到 {snap}")
-        # 只保留最近 keep 份该书的快照
-        olds = sorted(glob.glob(os.path.join(bdir, f"{base}__*")))
-        for old in olds[:-keep]:
-            shutil.rmtree(old, ignore_errors=True)
-    except Exception as e:      # noqa: BLE001
-        print(f"[备份] 跳过（{type(e).__name__}: {e}）")
-
-
 def fetch_total_from_sample(book, samples_path=SAMPLES):
     """从抓包样本里找该书的 bookInfoPage / ClientGetBookResource，用其 sc 现调拿真实总集数。
 
@@ -259,7 +231,6 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
 
     dst_dir = os.path.join(OUT, C.safe_dirname(book_name))
     os.makedirs(dst_dir, exist_ok=True)
-    _backup_before_run(dst_dir, book)
 
     end = end or total or (max(sections) if sections else 0)
     if not end:

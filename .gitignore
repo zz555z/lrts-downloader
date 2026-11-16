@@ -20,7 +20,6 @@ venv/
 # mitmproxy 证书（本地生成，勿上传）
 .mitmproxy/
 
-data/backup/
 
 # 抓包缓存(目录/书名)
 data/samples/menu_*.json

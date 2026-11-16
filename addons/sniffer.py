@@ -24,8 +24,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLES_DIR = os.path.join(_ROOT, "data", "samples")
 AUDIO_DIR = os.path.join(_ROOT, "data", "audio")
 REQOUT = os.path.join(SAMPLES_DIR, "req_samples.jsonl")
-ALLREQ = os.path.join(SAMPLES_DIR, "all_requests.jsonl")
-INDEX = os.path.join(SAMPLES_DIR, "audio_index.jsonl")
 os.makedirs(SAMPLES_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
@@ -74,8 +72,6 @@ def request(flow):
         rec = {"ts": time.time(), "method": flow.request.method, "host": host,
                "path": p, "headers": dict(flow.request.headers),
                "body": (flow.request.get_text(strict=False) or "")[:4000]}
-        with open(ALLREQ, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         with open(REQOUT, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print(f"[req] {flow.request.method} {host}{p[:80]}")
@@ -209,13 +205,8 @@ def response(flow):
     except Exception:
         return
     items = (j.get("data") or {}).get("pathList") or []
-    rows = [{"section": it.get("section"), "resId": it.get("resId"), "path": it.get("path"),
-             "trackId": it.get("trackId")} for it in items if it.get("path")]
-    if rows:
-        with open(INDEX, "a", encoding="utf-8") as f:
-            for r in rows:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"[audio] 记录 {len(rows)} 条直链（未下载）")
+    if items:
+        print(f"[audio] 本次响应含 {len(items)} 条音频直链（不下载）")
     if AUTO_DOWNLOAD:
         jobs = [(it["path"], i, it.get("section")) for i, it in enumerate(items) if it.get("path")]
         print(f"[audio] ⚠ AUTO_DOWNLOAD 开启，将下载 {len(jobs)} 个（会与下载器重复）")
