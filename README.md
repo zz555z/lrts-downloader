@@ -224,8 +224,7 @@ python cli.py menu --book 43913 --show 20
 
 - 所有产物在 `data/` 下，**已加入 `.gitignore`**，不会误传：
   - `data/audio/<书名>/` —— 下载的音频
-  - `data/samples/` —— 抓包样本、目录/书名缓存
-  - `data/cache/` —— 目录缓存
+  - `data/samples/` —— 抓包样本（`req_samples.jsonl`）与目录/书名缓存（`menu_*` / `name_*`）
 - **下载是纯增量的**：已存在的集一律跳过，工具**从不主动删除**已下载的音频。
 - `_failed.txt`：记录失败集号；重跑同一命令会自动补下。
 - `_manifest.json`：每本书的元信息（书名、bookId、集数、大小）。

@@ -20,11 +20,12 @@ H5 = "https://m.lrts.me"
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) "
       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
 
-# 项目内数据目录（缓存 / 下载输出都放这里）
+# 项目内数据目录（下载输出 / 缓存 / 抓包样本都在 data 下）
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(_ROOT, "data")
-CACHE_DIR = os.path.join(DATA_DIR, "cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
+# 统一用 data/samples 存抓包样本与目录/书名缓存（不再单独建 cache 目录）
+SAMPLES_DIR = os.path.join(DATA_DIR, "samples")
+os.makedirs(SAMPLES_DIR, exist_ok=True)
 
 CACHE_TTL = 7 * 86400          # 目录缓存有效期：7 天
 MENU_PAGE_DELAY = 0.6          # 翻页间隔（秒），防触发风控
@@ -73,37 +74,30 @@ def fetch_menu_page(book_id, page, retries=3):
 
 
 def _load_menu_cache(book_id):
-    """读取目录缓存，返回 {int: name} 或 None。
+    """读取目录缓存，返回 (total, {int: name}) 或 None。
 
-    兼容两处缓存：sniffer 抓包存的 data/samples/menu_<id>.json
-    与 getBookMenu 抓取缓存的 data/cache/menu_<id>.json。
-    samples 里的优先级更高（App 接口抓的，不受风控影响）。
+    缓存统一存在 data/samples/menu_<id>.json（sniffer 抓包累积 / getBookMenu 拉取共用）。
     """
-    samples_p = os.path.join(os.path.dirname(CACHE_DIR), "samples", f"menu_{book_id}.json")
-    cache_p = os.path.join(CACHE_DIR, f"menu_{book_id}.json")
-    for p in (samples_p, cache_p):
-        if not os.path.exists(p):
-            continue
-        try:
-            d = json.load(open(p, encoding="utf-8"))
-            # samples 格式: {"1":"第001集_xxx", ...}
-            # cache 格式:   {"_ts":..,"meta":{"total":N},"sections":{"1":..}}
-            raw = d.get("sections") if isinstance(d, dict) and "sections" in d else d
-            if not raw:
-                continue
-            secs = {int(k): v for k, v in raw.items() if str(k).isdigit()}
-            if not secs:
-                continue
-            # total 优先取缓存里记录的真实总集数(meta.total)，否则退回已缓存的最大 section 号
-            total = None
-            if isinstance(d, dict):
-                total = (d.get("meta") or {}).get("total")
-            if not total:
-                total = max(secs)  # 至少不要比已有集数还小
-            return int(total), secs
-        except Exception:
-            continue
-    return None
+    p = os.path.join(SAMPLES_DIR, f"menu_{book_id}.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        d = json.load(open(p, encoding="utf-8"))
+        raw = d.get("sections") if isinstance(d, dict) and "sections" in d else d
+        if not raw:
+            return None
+        secs = {int(k): v for k, v in raw.items() if str(k).isdigit()}
+        if not secs:
+            return None
+        # total 优先取缓存里记录的真实总集数(meta.total)，否则退回已缓存的最大 section 号
+        total = None
+        if isinstance(d, dict):
+            total = (d.get("meta") or {}).get("total")
+        if not total:
+            total = max(secs)
+        return int(total), secs
+    except Exception:
+        return None
 
 
 def print_menu_rate_limit_hint():
@@ -170,6 +164,7 @@ def get_all_sections(book_id, verbose=True, use_cache=True):
 
     if sections:
         try:
+            cache_path = os.path.join(SAMPLES_DIR, f"menu_{book_id}.json")
             json.dump({"_ts": time.time(), "meta": meta,
                        "sections": {str(k): v for k, v in sections.items()}},
                       open(cache_path, "w", encoding="utf-8"), ensure_ascii=False)
@@ -191,8 +186,8 @@ def get_book_name(book_id):
     注意：不再优先信已下目录的 _manifest.json——它可能残留 book_<id> 占位名，
     一旦残留会导致目录名一直修不正（文件散落）。
     """
-    # 1) sniffer 抓 bookInfoPage 时缓存的书名（最可靠，App 接口不受 H5 风控影响）
-    sp = os.path.join(os.path.dirname(CACHE_DIR), "samples", f"name_{book_id}.json")
+    # 1) 缓存的书名（sniffer 抓 bookInfoPage 时存，最可靠，App 接口不受 H5 风控影响）
+    sp = os.path.join(SAMPLES_DIR, f"name_{book_id}.json")
     if os.path.exists(sp):
         try:
             j = json.load(open(sp, encoding="utf-8"))
@@ -200,17 +195,7 @@ def get_book_name(book_id):
                 return j["name"]
         except Exception:
             pass
-    # 2) 本地缓存的书名
-    cp = os.path.join(CACHE_DIR, f"name_{book_id}.json")
-    if os.path.exists(cp):
-        try:
-            j = json.load(open(cp, encoding="utf-8"))
-            if time.time() - j.get("_ts", 0) < CACHE_TTL and j.get("name") \
-               and not _looks_bad_name(j["name"]):
-                return j["name"]
-        except Exception:
-            pass
-    # 3) 已下目录里若已有规范书名，也可用（但跳过 book_xxx 占位名）
+    # 2) 已下目录里若已有规范书名，也可用（但跳过 book_xxx 占位名）
     audio_out = os.path.join(DATA_DIR, "audio")
     if os.path.isdir(audio_out):
         for d in os.listdir(audio_out):
@@ -233,7 +218,7 @@ def get_book_name(book_id):
             name = re.sub(r"\s*[-–|]\s*懒人听书.*$", "", m.group(1)).strip()
             if name:
                 json.dump({"_ts": time.time(), "name": name},
-                          open(cp, "w", encoding="utf-8"), ensure_ascii=False)
+                          open(sp, "w", encoding="utf-8"), ensure_ascii=False)
                 return name
     except Exception:
         pass
