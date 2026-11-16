@@ -36,7 +36,44 @@ import urllib.parse
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SNIFFER = os.path.join(ROOT, "addons", "sniffer.py")
 SAMPLES = os.path.join(ROOT, "data", "samples", "req_samples.jsonl")
-MITM_CONFDIR = os.path.join(tempfile.gettempdir(), "lrts_mitm_conf")
+# mitmproxy 配置目录：优先复用"已被系统信任"的证书目录，避免新生成的 CA 未受信导致抓不到
+DEFAULT_CONFDIR = os.path.join(tempfile.gettempdir(), "lrts_mitm_conf")
+# 可能已受信的候选目录（本项目同级旧目录 / 项目内）
+CANDIDATE_CONFDIRS = [
+    os.path.join(os.path.dirname(ROOT), "app-scrape", ".mitmproxy"),
+    os.path.join(ROOT, ".mitmproxy"),
+    DEFAULT_CONFDIR,
+]
+
+
+def _cert_trusted(confdir):
+    """判断 confdir 下的 mitmproxy CA 是否已被系统信任。"""
+    cert = os.path.join(confdir, "mitmproxy-ca-cert.pem")
+    if not os.path.exists(cert):
+        return False
+    try:
+        r = subprocess.run(["security", "verify-cert", "-c", cert],
+                           capture_output=True, text=True)
+        return "successful" in (r.stdout + r.stderr)
+    except Exception:
+        return False
+
+
+def resolve_confdir(explicit=None):
+    """选一个可用的 confdir。
+
+    - 显式指定：优先用它（若里面还没证书，mitmproxy 会自动生成，但需你信任）
+    - 否则：优先返回"已受信"的候选目录；都不受信时用默认目录
+    """
+    if explicit:
+        return explicit
+    for d in CANDIDATE_CONFDIRS:
+        if _cert_trusted(d):
+            print(f"[*] 复用已受信任的证书目录：{d}")
+            return d
+    print("[!] 没找到已受信任的 mitmproxy 证书，将使用默认目录生成新证书")
+    print("    首次使用需按 README「信任证书」步骤操作，否则抓不到 HTTPS。")
+    return DEFAULT_CONFDIR
 
 
 # ---------------------------------------------------------------- 系统代理
@@ -79,14 +116,15 @@ def find_mitmdump():
     return which("mitmdump")
 
 
-def start_mitm(port):
+def start_mitm(port, confdir=None):
     mitm = find_mitmdump()
     if not mitm:
         raise SystemExit("找不到 mitmdump，请先 `brew install mitmproxy` 或 pip install mitmproxy")
-    os.makedirs(MITM_CONFDIR, exist_ok=True)
-    logf = open(os.path.join(MITM_CONFDIR, "mitm.log"), "w")
+    confdir = confdir or DEFAULT_CONFDIR
+    os.makedirs(confdir, exist_ok=True)
+    logf = open(os.path.join(confdir, "mitm.log"), "w")
     proc = subprocess.Popen(
-        [mitm, "-s", SNIFFER, "--listen-port", str(port), "--set", f"confdir={MITM_CONFDIR}"],
+        [mitm, "-s", SNIFFER, "--listen-port", str(port), "--set", f"confdir={confdir}"],
         stdout=logf, stderr=subprocess.STDOUT)
     # 等端口就绪
     for _ in range(20):
@@ -97,7 +135,7 @@ def start_mitm(port):
             import socket
             s = socket.create_connection(("127.0.0.1", port), timeout=0.5)
             s.close()
-            print(f"[*] mitmproxy 已启动（: {port}，日志 {os.path.join(MITM_CONFDIR,'mitm.log')}）")
+            print(f"[*] mitmproxy 已启动（: {port}，日志 {os.path.join(confdir,'mitm.log')}）")
             return proc, logf
         except OSError:
             continue
@@ -143,6 +181,8 @@ def main():
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--service", default="Wi-Fi", help="网络服务名（macOS，默认 Wi-Fi）")
     ap.add_argument("--timeout", type=int, default=180, help="等待播放的最长秒数")
+    ap.add_argument("--confdir", default=None,
+                    help="mitmproxy 配置目录（默认自动复用已受信任的证书目录）")
     args = ap.parse_args()
 
     baseline = sample_count()
@@ -170,7 +210,8 @@ def main():
             logf.close()
 
     try:
-        mitm, logf = start_mitm(args.port)
+        confdir = resolve_confdir(args.confdir)
+        mitm, logf = start_mitm(args.port, confdir)
         set_proxy(args.service, args.port, enable=True)
         proxy_on = True
 
