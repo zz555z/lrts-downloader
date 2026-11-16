@@ -144,6 +144,60 @@ def _backup_before_run(dst_dir, book, keep=3):
         print(f"[备份] 跳过（{type(e).__name__}: {e}）")
 
 
+def fetch_total_from_sample(book, samples_path=SAMPLES):
+    """从抓包样本里找该书的 bookInfoPage / ClientGetBookResource，用其 sc 现调拿真实总集数。
+
+    目录接口被限流时，靠这个兜底确定"全本"到底多少集。失败返回 None。
+    """
+    if not os.path.exists(samples_path):
+        return None
+    best = None
+    best_ts = -1
+    for line in open(samples_path, encoding="utf-8", errors="replace"):
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        p = d.get("path") or ""
+        hit = (("bookInfoPage" in p) or ("getbookresource" in p.lower())) and (f"id={book}" in p or f"bookId={book}" in p)
+        if hit and d.get("ts", 0) > best_ts:
+            best, best_ts = d, d.get("ts", 0)
+    if not best:
+        return None
+    try:
+        hdrs = {k: v for k, v in best["headers"].items()
+                if k not in ("Host", "Content-Length", "Accept-Encoding", "Connection")}
+        _, raw = http(f"https://{best['host']}{best['path']}", headers=hdrs,
+                      timeout=20, retries=1)
+        j = json.loads(raw.decode())
+        if "bookInfoPage" in best["path"]:
+            return ((j.get("data") or {}).get("detail") or {}).get("sections")
+        return j.get("sections")
+    except Exception:
+        return None
+
+
+def detect_total_via_probe(host, path, headers, base, book, start=1, cap=20000):
+    """目录完全拿不到时，用 batchGetListenPath 逐段向后探测总集数。
+
+    以 BATCH 为步长向后请求，返回空即停，返回最后一个有效 section。
+    """
+    last = start - 1
+    s = start
+    while s <= cap:
+        secs = list(range(s, s + BATCH))
+        try:
+            pl = request_batch(host, path, headers, base, book, secs)
+        except Exception:
+            break
+        good = [it.get("section") for it in pl if it.get("section") is not None]
+        if not good:
+            break
+        last = max(good)
+        s += BATCH
+    return last if last >= start else None
+
+
 def fetch_name_from_sample(book, samples_path=SAMPLES):
     """从抓包样本里找该书的 bookInfoPage 请求，用其 sc 现调一次拿书名。失败返回 None。"""
     best = None
@@ -209,7 +263,24 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
 
     end = end or total or (max(sections) if sections else 0)
     if not end:
-        raise SystemExit("无法确定总集数：请用 --end N 指定")
+        # 目录拿不到（限流）时的兜底：先试抓包样本里的真实总集数，再不行用 batchGet 探测
+        print("[*] 目录不可用，尝试用抓包样本确定总集数…")
+        t = fetch_total_from_sample(book)
+        if t:
+            end = int(t)
+            print(f"[*] 从抓包样本得到总集数：{end}")
+        else:
+            print("[*] 样本无总集数，改用 batchGetListenPath 逐段探测（可能需要一会儿）…")
+            t = detect_total_via_probe(host, path, headers, base, book, start=start)
+            if t:
+                end = int(t)
+                print(f"[*] 探测到总集数：{end}")
+    if not end:
+        raise SystemExit(
+            "无法确定总集数。请任选其一：\n"
+            "  - 用 --end N 指定结束集号（如 --end 100 表示下到第100集）\n"
+            "  - 在 App 目录页多滑几章后再重试（程序会缓存目录）\n"
+            "  - 或先按区间下载：--start 1 --end 50")
     all_secs = list(range(start, end + 1))
     print(f"[*] 目标 {start}..{end}（共 {len(all_secs)}），每批 {BATCH}，并发 {DL_WORKERS}")
 
