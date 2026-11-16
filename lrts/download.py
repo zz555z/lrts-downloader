@@ -178,20 +178,28 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
                     pl += request_batch(host, path, headers, base, book, [s])
                 except Exception:
                     failed.add(s)
+        # 用 as_completed 让每集一下完就立即打印（并发完成顺序）
+        from concurrent.futures import as_completed
         with ThreadPoolExecutor(max_workers=DL_WORKERS) as ex:
-            for sec, fn, sz, st in ex.map(
-                    lambda it: download_one(it, dst_dir, sections, book_name), pl):
+            futures = [ex.submit(download_one, it, dst_dir, sections, book_name) for it in pl]
+            for fut in as_completed(futures):
+                sec, fn, sz, st = fut.result()
+                fname = os.path.basename(fn) if fn else f"第{sec}集"
                 if st == "ok":
                     ok += 1; total_bytes += sz
+                    print(f"    ✔ 第{sec}集  {fname}  {sz/1048576:.2f}MB  "
+                          f"[总 {ok+skip}/{len(all_secs)}]", flush=True)
                 elif st == "skip":
                     skip += 1
+                    print(f"    · 第{sec}集  已存在，跳过  [{ok+skip}/{len(all_secs)}]", flush=True)
                 else:
                     failed.add(sec)
+                    print(f"    ✘ 第{sec}集  失败：{st}", flush=True)
         returned = {it.get("section") for it in pl}
         for s in chunk:
             if s not in returned:
                 failed.add(s)
-        print(f"  批次 {chunk[0]}..{chunk[-1]}: ok={ok} skip={skip} 失败={len(failed)}")
+        print(f"  批次 {chunk[0]}..{chunk[-1]}: ok={ok} skip={skip} 失败={len(failed)}", flush=True)
 
     _write_manifest(dst_dir, book, book_name, ok + skip)
     if failed:
