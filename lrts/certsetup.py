@@ -19,14 +19,54 @@ def cert_path(confdir):
     return os.path.join(confdir, "mitmproxy-ca-cert.pem")
 
 
+def _fingerprint(cert_pem):
+    """证书 SHA1 指纹（用于在钥匙串里比对是否是同一张证书）。"""
+    try:
+        r = subprocess.run(["openssl", "x509", "-in", cert_pem, "-noout",
+                            "-fingerprint", "-sha1"], capture_output=True, text=True)
+        # 形如 sha1 Fingerprint=AA:BB:...
+        line = [x for x in (r.stdout + r.stderr).splitlines() if "Fingerprint" in x]
+        if line:
+            return line[0].split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+
+def _installed_in_keychain(cert_pem):
+    """该证书是否已存在于任一钥匙串（登录 or 系统）。"""
+    fp = _fingerprint(cert_pem)
+    if not fp:
+        return False
+    for keychain in ("login.keychain-db", "System.keychain"):
+        try:
+            r = subprocess.run(["security", "find-certificate", "-a", "-Z", "-c", "mitmproxy",
+                                "/Library/Keychains/System.keychain"
+                                if keychain == "System.keychain"
+                                else os.path.expanduser("~/Library/Keychains/login.keychain-db")],
+                               capture_output=True, text=True)
+            if fp.replace(":", "").upper() in r.stdout.replace(":", "").upper() \
+               or fp.upper() in r.stdout.upper():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def is_trusted(confdir):
-    """证书是否已被系统信任。"""
+    """证书是否已被系统信任（且确实是这张证书）。
+
+    判定：证书存在 + 该指纹已装入钥匙串 + verify-cert 通过。
+    """
     cert = cert_path(confdir)
     if not os.path.exists(cert):
         return False
     if platform.system() != "Darwin":
-        # 非 macOS 无法可靠检测，返回 None 表示"未知"
-        return None
+        return None  # 非 macOS 无法可靠检测
+    # 1) 必须在某个钥匙串里（说明装过）
+    if not _installed_in_keychain(cert):
+        return False
+    # 2) 必须受信
     try:
         r = subprocess.run(["security", "verify-cert", "-c", cert],
                            capture_output=True, text=True)
@@ -51,7 +91,7 @@ def ensure_cert(confdir, interactive=True):
 
     trusted = is_trusted(confdir)
     if trusted:
-        print("[✓] mitmproxy 证书已验证受信任")
+        print("[✓] mitmproxy 证书已安装且受信任，无需重复安装")
         return True
 
     if platform.system() != "Darwin":
@@ -59,11 +99,17 @@ def ensure_cert(confdir, interactive=True):
         print(f"    {cert_path(confdir)}")
         return interactive and _ask_continue()
 
+    # 区分状态，给明确提示
+    installed = _installed_in_keychain(cert_path(confdir))
     print("\n" + "!" * 60)
-    print(" 需要安装并信任 mitmproxy 证书，否则抓不到 App 的 HTTPS 流量。")
+    if installed:
+        print(" 检测到证书已安装，但【未被信任】。需要把它设为『始终信任』。")
+    else:
+        print(" 检测到 mitmproxy 证书【尚未安装/信任】，装一次即可（之后不会再问）。")
+    print(" 为什么需要：抓 sc 要解密 App 的 HTTPS，必须信任 mitmproxy 根证书。")
     print(f" 证书文件：{cert_path(confdir)}")
     print("!" * 60)
-    print(" 方式一（推荐，自动安装到系统钥匙串，需要 sudo 密码）：")
+    print(" 方式一（推荐，自动安装到系统钥匙串并信任，需要 sudo 密码）：")
 
     if interactive:
         try:
@@ -72,7 +118,7 @@ def ensure_cert(confdir, interactive=True):
             ans = "y"
         if ans in ("", "y", "yes"):
             if _install_darwin(confdir):
-                print("[✓] 证书已安装并设为信任")
+                print("[✓] 证书已安装并设为信任（以后不再询问）")
                 return True
             print("[!] 自动安装失败，请用下面的方式二手动安装")
 
@@ -82,7 +128,7 @@ def ensure_cert(confdir, interactive=True):
     print("   2) 在「钥匙串访问 → 系统」里找到 mitmproxy 证书，双击")
     print("   3) 展开「信任」，把「使用此证书时」设为『始终信任』")
     print("   4) 关闭窗口，输入密码确认")
-    print("\n 装好后重新运行本脚本即可。")
+    print("\n 装好后重新运行本脚本即可（脚本会自动检测到，不再询问）。")
     return interactive and _ask_continue()
 
 
