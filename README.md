@@ -45,6 +45,7 @@
 ```
 lrts-downloader/
 ├── cli.py                # 命令行入口（dl / rename / menu）
+├── grab_sc.py            # 一键抓 sc（自动开关代理 + 起停 mitmproxy）
 ├── lrts/
 │   ├── __init__.py
 │   ├── common.py         # HTTP 重试、目录抓取+缓存、命名清洗
@@ -78,7 +79,25 @@ pip install -r requirements.txt   # 仅抓 sc 需要 mitmproxy；下载/改名�
 
 ### 第 0 步 · 拿到 fresh sc（二选一）
 
-**方式 A：mitmproxy 自动抓（推荐）**
+**方式 A · 一键脚本（推荐，全自动）**
+
+```bash
+python grab_sc.py
+```
+
+脚本会**自动**完成：启动 mitmproxy → 开启系统代理 → 提示你去 App 播一集 →
+**抓到请求后自动关闭代理、停止 mitmproxy**，并打印书号。
+
+> 首次使用需先信任 mitmproxy 证书（见下方「方式 A'」的第 1、2 步，只需做一次）。
+> 修改系统代理需要 sudo，脚本会在终端里提示你输密码。
+> 脚本用 `try/finally` 保证退出（含 Ctrl-C）时一定关代理，**不会把你搞断网**。
+
+抓完后直接：
+```bash
+python cli.py dl --book <脚本打印的书号>
+```
+
+**方式 A' · 手动 mitmproxy（一键脚本不好使时）**
 
 1. 安装并信任 mitmproxy 证书（首次）。
 2. 启动插件（只记录、不下载）：
