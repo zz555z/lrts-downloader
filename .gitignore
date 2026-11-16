@@ -21,3 +21,7 @@ venv/
 .mitmproxy/
 
 data/backup/
+
+# 抓包缓存(目录/书名)
+data/samples/menu_*.json
+data/samples/name_*.json
