@@ -83,6 +83,61 @@ def request(flow):
         pass
 
 
+def _capture_menu(flow):
+    """从 bookInfoPage / ClientGetBookResource 的响应里提取 section->name，累积到
+    data/samples/menu_<bookId>.json，供下载器命名使用。
+
+    这两个是 App 接口，抓包时它们的 response 里带目录，能覆盖"当前页"的章节名。
+    多次抓包/翻页会不断累积，最终覆盖尽可能多的集。
+    """
+    try:
+        body = flow.response.get_text(strict=False) or ""
+        j = json.loads(body)
+    except Exception:
+        return
+    data = j.get("data") or {}
+    book = None
+    items = []
+
+    # bookInfoPage: data.detail.sections + data.tabList[目录].data.tracks[]
+    if "bookInfoPage" in (flow.request.path or ""):
+        det = data.get("detail") or {}
+        book = det.get("id")
+        for t in data.get("tabList") or []:
+            if t.get("name") == "目录":
+                items = (t.get("data") or {}).get("tracks") or []
+                break
+    # ClientGetBookResource: bookId + list[]
+    elif "getbookresource" in (flow.request.path or "").lower():
+        book = j.get("bookId")
+        items = j.get("list") or []
+
+    if not book:
+        # 从请求 query 兜底取 bookId
+        m = re.search(r"[?&](?:bookId|id)=(\d+)", flow.request.path or "")
+        book = m.group(1) if m else None
+    if not book or not items:
+        return
+
+    path = os.path.join(SAMPLES_DIR, f"menu_{book}.json")
+    store = {}
+    if os.path.exists(path):
+        try:
+            store = json.load(open(path, encoding="utf-8"))
+        except Exception:
+            store = {}
+    added = 0
+    for it in items:
+        sec = it.get("section")
+        name = it.get("name")
+        if sec is not None and name and str(sec) not in store:
+            store[str(sec)] = name
+            added += 1
+    if added or not os.path.exists(path):
+        json.dump(store, open(path, "w", encoding="utf-8"), ensure_ascii=False)
+        print(f"[menu] 累计目录 book={book}: +{added}，共 {len(store)} 集 -> {path}")
+
+
 def response(flow):
     host = flow.request.host or ""
     p = (flow.request.path or "").lower()
@@ -100,6 +155,12 @@ def response(flow):
                 print(f"[stream] 本体 {n/1048576:.2f}MB {tag}")
         except Exception as e:      # noqa: BLE001
             print(f"[stream] 失败 {e}")
+        return
+
+    # 目录响应捕获：抓包时顺手把 App 的目录接口响应存下来，
+    # 供下载器命名使用（不依赖会被限流的 H5 getBookMenu）。
+    if any(k in p for k in ("bookinfopage", "clientgetbookresource", "getbookresource")):
+        _capture_menu(flow)
         return
 
     if not any(k in p for k in ("listenpath", "playpath", "batchget", "getpath")):

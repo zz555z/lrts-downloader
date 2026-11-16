@@ -135,14 +135,26 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
     if no_menu:
         print("[*] --no-menu：跳过目录，按 section 下载（命名 第N集）")
     else:
-        print(f"[*] 拉取 {book} 目录…")
-        try:
-            meta, sections = C.get_all_sections(book)
-            total = meta.get("total") or (max(sections) if sections else 0)
-        except Exception as e:      # noqa: BLE001
-            print(f"[!] 拉目录失败：{e}")
-            print("[!] 降级为 --no-menu（按 section 下载，命名 第N集；"
-                  "稍后可跑 rename 补章节名）")
+        # 优先用抓包时缓存的目录（data/samples/menu_<book>.json，不受 getBookMenu 限流影响）
+        cap = os.path.join(os.path.dirname(SAMPLES), f"menu_{book}.json")
+        if os.path.exists(cap):
+            try:
+                m = json.load(open(cap, encoding="utf-8"))
+                sections = {int(k): v for k, v in m.items()}
+                total = max(sections) if sections else 0
+                print(f"[*] 用抓包缓存目录：{len(sections)} 集")
+            except Exception:
+                sections = {}
+        # 缓存不足则尝试在线拉取（getBookMenu，可能被限流）
+        if not sections:
+            print(f"[*] 拉取 {book} 目录…")
+            try:
+                meta, sections = C.get_all_sections(book)
+                total = meta.get("total") or (max(sections) if sections else 0)
+            except Exception as e:      # noqa: BLE001
+                print(f"[!] 拉目录失败：{e}")
+                print("[!] 降级为 --no-menu（按 section 下载，命名 第N集；"
+                      "稍后可跑 rename 补章节名）")
     if not book_name:
         book_name = f"book_{book}"
     print(f"[*] 书名: {book_name}  总集数: {total or '未知'}  章节名: {len(sections)}")
