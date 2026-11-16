@@ -150,23 +150,37 @@ def fetch_total_from_sample(book, samples_path=SAMPLES):
 
 
 def detect_total_via_probe(host, path, headers, base, book, start=1, cap=20000):
-    """目录完全拿不到时，用 batchGetListenPath 逐段向后探测总集数。
+    """目录完全拿不到时，用 batchGetListenPath 探测总集数。
 
-    以 BATCH 为步长向后请求，返回空即停，返回最后一个有效 section。
+    优化：先用大步长(200)向后跳，命中空则回溯到上一个有效点，再逐段精确定位，
+    减少请求次数。返回最后一个有效的 section 号，失败返回 None。
     """
-    last = start - 1
-    s = start
-    while s <= cap:
-        secs = list(range(s, s + BATCH))
+    def probe_sections(secs):
         try:
             pl = request_batch(host, path, headers, base, book, secs)
         except Exception:
-            break
-        good = [it.get("section") for it in pl if it.get("section") is not None]
-        if not good:
-            break
-        last = max(good)
-        s += BATCH
+            return []
+        return [it.get("section") for it in pl if it.get("section") is not None]
+
+    step = 200
+    last = start - 1
+    s = start
+    print(f"  [探测] 从第 {start} 集起，步长 {step}…")
+    while s <= cap:
+        secs = list(range(s, s + step))
+        good = probe_sections(secs)
+        if good:
+            last = max(good)
+            print(f"  [探测] 第 {s}-{s+step-1} 有效，最大 section={last}")
+            s += step
+            # 连续有效可加大步长（加速），但要留余量
+            step = min(step * 2, 1000)
+        else:
+            if step <= BATCH:
+                break  # 已到最小步长且空，说明到头了
+            # 回溯：从 last+1 用小步重探
+            s = last + 1
+            step = max(step // 2, BATCH)
     return last if last >= start else None
 
 

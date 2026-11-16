@@ -29,7 +29,6 @@ import os
 import platform
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.parse
 
@@ -175,7 +174,6 @@ def main():
 
     mitm = logf = None
     proxy_on = False
-    interrupted = False
 
     def cleanup():
         nonlocal proxy_on
@@ -246,7 +244,6 @@ def main():
             print("    请确认：1) mitmproxy 证书已信任 2) App 真的开始播放了 3) 代理确实生效")
             return ("fail", None)
     except KeyboardInterrupt:
-        interrupted = True
         print("\n[!] 已中断")
         return ("interrupted", None)
     finally:

@@ -7,57 +7,20 @@ batchGetListenPath 等请求（含 query + body + headers）落盘到
 `data/samples/req_samples.jsonl`，供 lrts.download 读取。
 **它绝不下载音频**，避免和下载器重复拉流。
 
-若确需恢复"抓包即下载"（不推荐，会和下载器重复），设环境变量 SNIFFER_DOWNLOAD=1。
-
 用法:
   mitmdump -s addons/sniffer.py --listen-port 8080 --set confdir=/tmp/mitm
 """
 import json
 import os
 import re
-import subprocess
 import time
-import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLES_DIR = os.path.join(_ROOT, "data", "samples")
-AUDIO_DIR = os.path.join(_ROOT, "data", "audio")
 REQOUT = os.path.join(SAMPLES_DIR, "req_samples.jsonl")
 os.makedirs(SAMPLES_DIR, exist_ok=True)
-os.makedirs(AUDIO_DIR, exist_ok=True)
-
-UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 "
-      "(KHTML, like Gecko) Mobile/15E148")
-POOL = ThreadPoolExecutor(max_workers=6)
-AUTO_DOWNLOAD = os.environ.get("SNIFFER_DOWNLOAD", "0") == "1"
 
 APP_HOSTS = ("mting.info", "lanrentingshu.com")
-
-
-def _name(u, idx):
-    p = urllib.parse.urlparse(u).path
-    base = os.path.basename(p) or f"audio_{idx}"
-    base = re.sub(r"[^\w.\-]", "_", base)
-    if not base.endswith((".m4a", ".mp3", ".aac")):
-        base += ".m4a"
-    return base
-
-
-def _download(job):
-    """仅 AUTO_DOWNLOAD=1 时使用。"""
-    url, idx, _sec = job
-    try:
-        out = os.path.join(AUDIO_DIR, _name(url, idx))
-        if os.path.exists(out) and os.path.getsize(out) > 50_000:
-            return f"skip {os.path.basename(out)}"
-        subprocess.run(["curl", "-sL", "-m", "180", "--compressed",
-                        "-H", f"User-Agent: {UA}", "-o", out, url],
-                       capture_output=True, timeout=200)
-        sz = os.path.getsize(out) if os.path.exists(out) else 0
-        return f"OK {os.path.basename(out)} {sz/1048576:.2f}MB"
-    except Exception as e:      # noqa: BLE001
-        return f"FAIL {e}"
 
 
 def request(flow):
@@ -167,12 +130,7 @@ def response(flow):
         try:
             n = len(flow.response.raw_content or b"")
             if n > 20000:
-                tag = "已保存" if AUTO_DOWNLOAD else "仅记录(未保存)"
-                if AUTO_DOWNLOAD:
-                    out = os.path.join(AUDIO_DIR, _name(flow.request.path, 0))
-                    with open(out, "wb") as f:
-                        f.write(flow.response.raw_content)
-                print(f"[stream] 本体 {n/1048576:.2f}MB {tag}")
+                print(f"[stream] 音频本体 {n/1048576:.2f}MB（仅记录，不下载）")
         except Exception as e:      # noqa: BLE001
             print(f"[stream] 失败 {e}")
         return
@@ -206,9 +164,4 @@ def response(flow):
         return
     items = (j.get("data") or {}).get("pathList") or []
     if items:
-        print(f"[audio] 本次响应含 {len(items)} 条音频直链（不下载）")
-    if AUTO_DOWNLOAD:
-        jobs = [(it["path"], i, it.get("section")) for i, it in enumerate(items) if it.get("path")]
-        print(f"[audio] ⚠ AUTO_DOWNLOAD 开启，将下载 {len(jobs)} 个（会与下载器重复）")
-        for res in POOL.map(_download, jobs):
-            print(f"[audio] {res}")
+        print(f"[audio] 本次响应含 {len(items)} 条音频直链（仅记录，不下载）")

@@ -47,6 +47,10 @@ def rename_book(dpath, book):
         print(f"  [!] 拉目录失败（{e}），跳过")
         return 0, 0
     print(f"  [*] 拿到 {len(sections)} 集章节名")
+    if not sections:
+        print("  [!] 目录为空，无法补全章节名。")
+        C.print_menu_rate_limit_hint()
+        return 0, 0
     bn = C.safe_name(os.path.basename(dpath).split("|")[0])
     renamed = skipped = 0
     for f in os.listdir(dpath):
@@ -77,8 +81,20 @@ def rename_all(book=None):
     """重命名所有（或指定）书。返回总计 (renamed, skipped)。"""
     targets = _books(book)
     if not targets:
-        print("没有可处理的书（需要 data/audio/<书名>/_manifest.json 且含 bookId）")
-        return 0, 0
+        if book:
+            # 指定了书号但没找到带该 bookId 的书目录：尝试直接对整个 audio 下的目录处理
+            candidates = [os.path.join(OUT, d) for d in os.listdir(OUT)
+                          if os.path.isdir(os.path.join(OUT, d))] if os.path.isdir(OUT) else []
+            if not candidates:
+                print(f"没有可处理的书目录（data/audio 为空）")
+                return 0, 0
+            print(f"[*] 未找到含 bookId={book} 的 _manifest.json，"
+                  f"将对 data/audio 下所有目录按 bookId={book} 的目录重命名")
+            targets = [(d, str(book)) for d in candidates]
+        else:
+            print("没有可处理的书（需要 data/audio/<书名>/_manifest.json 且含 bookId；"
+                  "或用 `python cli.py rename --book <书号>` 指定书号）")
+            return 0, 0
     tr = ts = 0
     for dpath, bid in targets:
         r, s = rename_book(dpath, bid)

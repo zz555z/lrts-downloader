@@ -205,12 +205,23 @@ python cli.py dl --book 43913 --no-menu     # 跳过目录，按 section 下，�
 - `--book`：书号（8 位数字，可从 App 分享链接/URL 里看到）
 - 终端下会交互询问下载范围；**非交互环境**（脚本/管道/CI）自动按参数执行、默认全本
 
-### `cli.py rename` — 按章节名重命名 / 自检修复
+### `cli.py rename` — 单独补全/重命名章节名
+
+**下载后想单独补章节名**（比如之前用 `--no-menu` 只下了 `第N集.m4a`，后来想补标题），
+用这条命令即可，不必重下：
 
 ```bash
-python cli.py rename              # 处理 data/audio 下所有书
-python cli.py rename --book 43913 # 只处理某本
+python cli.py rename                # 处理 data/audio 下所有书
+python cli.py rename --book 43913   # 只处理某本（推荐，最准确）
 ```
+
+- 它按当前缓存/在线目录把 `第N集.m4a` 补成 `第N集_章节名.m4a`，**只改名，不动音频**
+- 已正确的、缺章节名的会跳过，**幂等安全**
+- 拿不到章节名时会提示你去 App 多滑几章再重试
+- 对没有 `_manifest.json` 的旧目录，也可用 `--book <书号>` 指定后处理
+
+> 补全章节名的**来源**：优先抓包缓存（`data/samples/menu_<书号>.json`），其次在线
+> `getBookMenu`。所以想在 App 里多滑几章目录、再跑这条命令，就能补得最全。
 
 ### `cli.py menu` — 查看目录 / 验证缓存
 
