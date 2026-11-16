@@ -248,6 +248,17 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
             f.write(",".join(str(s) for s in sorted(failed)))
         print(f"[!] {len(failed)} 集失败，已写 {fp}（重跑本命令自动补下）")
     print(f"[*] 完成：新增 {ok} 集 / {total_bytes/1048576:.1f} MB，跳过 {skip}，失败 {len(failed)}")
+
+    # 自检并修复书名 / 章节名
+    print("[*] 自检书名与章节名…")
+    try:
+        from . import rename as R
+        v = R.verify_and_fix(dst_dir, book, book_name)
+        if v.get("final_dir"):
+            dst_dir = v["final_dir"]
+    except Exception as e:      # noqa: BLE001
+        print(f"[!] 自检出错（不影响已下载文件）：{e}")
+
     print(f"[*] 目录: {dst_dir}")
     return {"ok": ok, "skip": skip, "failed": sorted(failed), "dir": dst_dir}
 

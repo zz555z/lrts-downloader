@@ -84,3 +84,125 @@ def rename_all(book=None):
         r, s = rename_book(dpath, bid)
         tr += r; ts += s
     return tr, ts
+
+
+def verify_and_fix(dst_dir, book, book_name=None):
+    """下载完成后自检并修复：①书目录名 ②每集章节名。
+
+    返回 dict：{dir_ok, dir_fixed, ep_total, ep_with_title, ep_fixed, problems}
+    """
+    import glob
+    book = str(book)
+    result = {"dir_ok": True, "dir_fixed": False, "ep_total": 0,
+              "ep_with_title": 0, "ep_fixed": 0, "problems": [],
+              "final_dir": dst_dir}
+
+    # ---- ① 书目录名校验 ----
+    dname = os.path.basename(dst_dir.rstrip("/"))
+    looks_bad = bool(re.fullmatch(r"book_\d+", dname)) or not dname.strip()
+    real_name = book_name or C.get_book_name(book) or fetch_name_via_sample(book)
+    if looks_bad and real_name:
+        target = os.path.join(OUT, C.safe_dirname(real_name))
+        if os.path.abspath(target) != os.path.abspath(dst_dir):
+            try:
+                # 若目标已存在（并发/重复），合并进去
+                if os.path.exists(target):
+                    for f in os.listdir(dst_dir):
+                        os.replace(os.path.join(dst_dir, f), os.path.join(target, f))
+                    os.rmdir(dst_dir)
+                else:
+                    os.rename(dst_dir, target)
+                print(f"  [自检] 书目录名不规范，已修正：{dname} -> {real_name}")
+                result["dir_ok"] = False
+                result["dir_fixed"] = True
+                dst_dir = target
+                book_name = real_name
+                result["final_dir"] = dst_dir
+            except Exception as e:      # noqa: BLE001
+                result["problems"].append(f"书目录改名失败：{e}")
+
+    # ---- ② 每集章节名校验 ----
+    files = [f for f in os.listdir(dst_dir) if f.endswith(".m4a")]
+    result["ep_total"] = len(files)
+    try:
+        _, sections = C.get_all_sections(book)
+    except Exception:
+        sections = {}
+    # 无在线目录时尝试读 sniffer 缓存目录
+    if not sections:
+        cap = os.path.join(C.DATA_DIR, "samples", f"menu_{book}.json")
+        if os.path.exists(cap):
+            try:
+                m = json.load(open(cap, encoding="utf-8"))
+                sections = {int(k): v for k, v in m.items()}
+            except Exception:
+                sections = {}
+
+    for f in files:
+        m = re.fullmatch(r"第(\d+)集(.*)\.m4a", f)
+        if not m:
+            continue
+        has_title = bool(m.group(2).strip("_ "))
+        if has_title:
+            result["ep_with_title"] += 1
+
+    # 修复：纯"第N集"但目录里有章节名 → 补上
+    fixed = 0
+    if sections:
+        for f in list(os.listdir(dst_dir)):
+            m = re.fullmatch(r"第(\d+)集\.m4a", f)   # 纯第N集无标题
+            if not m:
+                continue
+            sec = int(m.group(1))
+            name = sections.get(sec)
+            if not name:
+                continue
+            newname = C.episode_filename(sec, name, None)
+            bn = C.safe_name(os.path.basename(dst_dir).split("|")[0])
+            if newname == f"第{sec}集_{bn}.m4a":
+                continue
+            src = os.path.join(dst_dir, f)
+            dst = os.path.join(dst_dir, newname)
+            if not os.path.exists(dst):
+                os.rename(src, dst)
+                fixed += 1
+        if fixed:
+            print(f"  [自检] 补全 {fixed} 集的章节名")
+            result["ep_fixed"] = fixed
+
+    # 汇总问题
+    if result["ep_total"] and result["ep_with_title"] == 0 and not sections:
+        result["problems"].append(
+            "所有集都只有'第N集'无章节名；未能拿到目录（getBookMenu限流/无抓包缓存），"
+            "可稍后运行 `python cli.py rename --book %s` 补全" % book)
+    elif result["ep_total"] and result["ep_with_title"] < result["ep_total"] - result["ep_fixed"]:
+        miss = result["ep_total"] - result["ep_with_title"] - result["ep_fixed"]
+        if miss > 0:
+            result["problems"].append(f"{miss} 集仍缺章节名（目录不全）")
+
+    # 更新 manifest 书名
+    try:
+        mf = os.path.join(dst_dir, "_manifest.json")
+        if os.path.exists(mf):
+            j = json.load(open(mf, encoding="utf-8"))
+            j["book"] = os.path.basename(dst_dir)
+            json.dump(j, open(mf, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # 打印结论
+    if not result["problems"] and not result["dir_fixed"] and not result["ep_fixed"]:
+        print(f"  [自检] ✔ 书名与章节名正常（{result['ep_total']} 集，"
+              f"{result['ep_with_title']} 集带章节名）")
+    for p in result["problems"]:
+        print(f"  [自检] ⚠ {p}")
+    return result
+
+
+def fetch_name_via_sample(book):
+    """从抓包样本的 bookInfoPage 现调拿书名（延迟导入避免循环依赖）。"""
+    try:
+        from . import download as D
+        return D.fetch_name_from_sample(book)
+    except Exception:
+        return None
