@@ -85,10 +85,11 @@ pip install -r requirements.txt   # 仅抓 sc 需要 mitmproxy；下载/改名�
 python grab_sc.py
 ```
 
-脚本会**自动**完成：启动 mitmproxy → 开启系统代理 → 提示你去 App 播一集 →
-**抓到请求后自动关闭代理、停止 mitmproxy**，并打印书号。
+脚本会**自动**完成：**检查 mitmproxy 证书（未信任则引导你一键安装）** → 启动 mitmproxy →
+开启系统代理 → 提示你去 App 播一集 → **抓到请求后自动关闭代理、停止 mitmproxy**，并打印书号。
 
-> 首次使用需先信任 mitmproxy 证书（见下方「方式 A'」的第 1、2 步，只需做一次）。
+> 首次运行若提示证书未信任，脚本会问你是否自动安装（需输 sudo 密码）；
+> 也可以选择手动安装，按屏幕上的步骤把 mitmproxy 证书设为「始终信任」即可。
 > 修改系统代理需要 sudo，脚本会在终端里提示你输密码。
 > 脚本用 `try/finally` 保证退出（含 Ctrl-C）时一定关代理，**不会把你搞断网**。
 

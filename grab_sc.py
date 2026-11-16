@@ -211,6 +211,11 @@ def main():
 
     try:
         confdir = resolve_confdir(args.confdir)
+        # 关键：启动前先确保 mitmproxy 证书已安装并被系统信任，否则按提示引导安装
+        from lrts import certsetup
+        if not certsetup.ensure_cert(confdir):
+            print("\n[!] 未完成证书信任，无法抓取 HTTPS。已退出。")
+            return 2
         mitm, logf = start_mitm(args.port, confdir)
         set_proxy(args.service, args.port, enable=True)
         proxy_on = True
