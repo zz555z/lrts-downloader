@@ -223,6 +223,15 @@ python cli.py rename --book 43913   # 只处理某本（推荐，最准确）
 > 补全章节名的**来源**：优先抓包缓存（`data/samples/menu_<书号>.json`），其次在线
 > `getBookMenu`。所以想在 App 里多滑几章目录、再跑这条命令，就能补得最全。
 
+### `cli.py list` — 列出已下载的书和书号
+
+```bash
+python cli.py list
+```
+
+显示每本书的 **书号 / 集数 / 大小 / 书名**。书目录名是中文书名后，想查某本书的
+书号（用于 `rename --book` 等），跑这条即可。
+
 ### `cli.py menu` — 查看目录 / 验证缓存
 
 ```bash

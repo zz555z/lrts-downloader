@@ -5,6 +5,7 @@
   dl       批量下载一本书
   rename   按 App 真实章节名重命名已下载的音频
   menu     查看某本书的目录（验证接口/缓存是否可用）
+  list     列出已下载的书及其书号/集数/大小
 
 示例：
   python cli.py dl --book 43913
@@ -12,6 +13,7 @@
   python cli.py rename            # 重命名全部已下书
   python cli.py rename --book 43913
   python cli.py menu --book 43913
+  python cli.py list              # 看每本书的书号
 """
 import argparse
 import sys
@@ -55,6 +57,43 @@ def cmd_menu(args):
         print(f"  第{sec}集 -> {sections[sec]}")
 
 
+def cmd_list(args):
+    """列出已下载的所有书：书名 -> 书号 / 集数 / 大小。"""
+    import glob
+    import json
+    import os
+    out = os.path.join(C.DATA_DIR, "audio")
+    if not os.path.isdir(out):
+        print("还没有下载任何书（data/audio 为空）")
+        return
+    rows = []
+    for d in sorted(os.listdir(out)):
+        dp = os.path.join(out, d)
+        if not os.path.isdir(dp):
+            continue
+        mf = os.path.join(dp, "_manifest.json")
+        bid, episodes = "?", 0
+        if os.path.exists(mf):
+            try:
+                j = json.load(open(mf, encoding="utf-8"))
+                bid = str(j.get("bookId") or "?")
+                episodes = int(j.get("episodes") or 0)
+            except Exception:
+                pass
+        n = len(glob.glob(os.path.join(dp, "第*集*.m4a")))
+        size = sum(os.path.getsize(p) for p in glob.glob(os.path.join(dp, "第*集*.m4a")))
+        rows.append((d, bid, n or episodes, size))
+    if not rows:
+        print("还没有下载任何书（data/audio 为空）")
+        return
+    print(f"{'书号':<10} {'集数':>6} {'大小':>9}  书名")
+    print("-" * 70)
+    for name, bid, n, size in rows:
+        print(f"{bid:<10} {n:>6} {size/1048576:>7.1f}MB  {name}")
+    print("-" * 70)
+    print("提示：补章节名用 `python cli.py rename --book <书号>`")
+
+
 def main():
     ap = argparse.ArgumentParser(description="懒人听书下载器")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -76,6 +115,9 @@ def main():
     p.add_argument("--book", required=True)
     p.add_argument("--show", type=int, default=10)
     p.set_defaults(func=cmd_menu)
+
+    p = sub.add_parser("list", help="列出已下载的书及其书号/集数/大小")
+    p.set_defaults(func=cmd_list)
 
     args = ap.parse_args()
     args.func(args)
