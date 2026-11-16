@@ -1,0 +1,3 @@
+# 运行下载/改名本身（核心功能）零第三方依赖，只需 Python 3.9+。
+# 抓 sc 时才需要 mitmproxy：
+mitmproxy>=10.0

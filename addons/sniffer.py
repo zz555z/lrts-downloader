@@ -1,0 +1,138 @@
+"""mitmproxy 插件：只记录 App 请求（用于获取"新鲜 sc"），不下载音频。
+
+为什么只记录
+------------
+批量下载复用 App 的 fresh sc（详见 README）。本插件只负责把 App 发出的
+batchGetListenPath 等请求（含 query + body + headers）落盘到
+`data/samples/req_samples.jsonl`，供 lrts.download 读取。
+**它绝不下载音频**，避免和下载器重复拉流。
+
+若确需恢复"抓包即下载"（不推荐，会和下载器重复），设环境变量 SNIFFER_DOWNLOAD=1。
+
+用法:
+  mitmdump -s addons/sniffer.py --listen-port 8080 --set confdir=/tmp/mitm
+"""
+import json
+import os
+import re
+import subprocess
+import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SAMPLES_DIR = os.path.join(_ROOT, "data", "samples")
+AUDIO_DIR = os.path.join(_ROOT, "data", "audio")
+REQOUT = os.path.join(SAMPLES_DIR, "req_samples.jsonl")
+ALLREQ = os.path.join(SAMPLES_DIR, "all_requests.jsonl")
+INDEX = os.path.join(SAMPLES_DIR, "audio_index.jsonl")
+os.makedirs(SAMPLES_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
+UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 "
+      "(KHTML, like Gecko) Mobile/15E148")
+POOL = ThreadPoolExecutor(max_workers=6)
+AUTO_DOWNLOAD = os.environ.get("SNIFFER_DOWNLOAD", "0") == "1"
+
+APP_HOSTS = ("mting.info", "lanrentingshu.com")
+
+
+def _name(u, idx):
+    p = urllib.parse.urlparse(u).path
+    base = os.path.basename(p) or f"audio_{idx}"
+    base = re.sub(r"[^\w.\-]", "_", base)
+    if not base.endswith((".m4a", ".mp3", ".aac")):
+        base += ".m4a"
+    return base
+
+
+def _download(job):
+    """仅 AUTO_DOWNLOAD=1 时使用。"""
+    url, idx, _sec = job
+    try:
+        out = os.path.join(AUDIO_DIR, _name(url, idx))
+        if os.path.exists(out) and os.path.getsize(out) > 50_000:
+            return f"skip {os.path.basename(out)}"
+        subprocess.run(["curl", "-sL", "-m", "180", "--compressed",
+                        "-H", f"User-Agent: {UA}", "-o", out, url],
+                       capture_output=True, timeout=200)
+        sz = os.path.getsize(out) if os.path.exists(out) else 0
+        return f"OK {os.path.basename(out)} {sz/1048576:.2f}MB"
+    except Exception as e:      # noqa: BLE001
+        return f"FAIL {e}"
+
+
+def request(flow):
+    """记录 App 业务 API 请求（用于拿新鲜 sc / 发现接口）。"""
+    try:
+        host = flow.request.host or ""
+        if not any(h in host for h in APP_HOSTS):
+            return
+        p = flow.request.path or ""
+        if not any(k in p.lower() for k in ("/cgi", "/yyting", "/earning", "/gateway")):
+            return
+        rec = {"ts": time.time(), "method": flow.request.method, "host": host,
+               "path": p, "headers": dict(flow.request.headers),
+               "body": (flow.request.get_text(strict=False) or "")[:4000]}
+        with open(ALLREQ, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with open(REQOUT, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"[req] {flow.request.method} {host}{p[:80]}")
+    except Exception:      # noqa: BLE001
+        pass
+
+
+def response(flow):
+    host = flow.request.host or ""
+    p = (flow.request.path or "").lower()
+
+    # 音频本体：默认只打印，不落盘
+    if "vb.stream.tencentmusic.com" in host:
+        try:
+            n = len(flow.response.raw_content or b"")
+            if n > 20000:
+                tag = "已保存" if AUTO_DOWNLOAD else "仅记录(未保存)"
+                if AUTO_DOWNLOAD:
+                    out = os.path.join(AUDIO_DIR, _name(flow.request.path, 0))
+                    with open(out, "wb") as f:
+                        f.write(flow.response.raw_content)
+                print(f"[stream] 本体 {n/1048576:.2f}MB {tag}")
+        except Exception as e:      # noqa: BLE001
+            print(f"[stream] 失败 {e}")
+        return
+
+    if not any(k in p for k in ("listenpath", "playpath", "batchget", "getpath")):
+        return
+
+    try:
+        rec = {"ts": time.time(), "host": flow.request.host,
+               "path": flow.request.path, "method": flow.request.method,
+               "headers": dict(flow.request.headers),
+               "body": flow.request.get_text(strict=False) or ""}
+        with open(REQOUT, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"[req] 已记录 {flow.request.method} {flow.request.path[:70]} body={len(rec['body'])}B")
+    except Exception as e:      # noqa: BLE001
+        print(f"[req] 记录失败 {e}")
+
+    body = flow.response.get_text(strict=False) or ""
+    if "pathList" not in body:
+        return
+    try:
+        j = json.loads(body)
+    except Exception:
+        return
+    items = (j.get("data") or {}).get("pathList") or []
+    rows = [{"section": it.get("section"), "resId": it.get("resId"), "path": it.get("path"),
+             "trackId": it.get("trackId")} for it in items if it.get("path")]
+    if rows:
+        with open(INDEX, "a", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"[audio] 记录 {len(rows)} 条直链（未下载）")
+    if AUTO_DOWNLOAD:
+        jobs = [(it["path"], i, it.get("section")) for i, it in enumerate(items) if it.get("path")]
+        print(f"[audio] ⚠ AUTO_DOWNLOAD 开启，将下载 {len(jobs)} 个（会与下载器重复）")
+        for res in POOL.map(_download, jobs):
+            print(f"[audio] {res}")
