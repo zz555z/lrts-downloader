@@ -87,10 +87,20 @@ def _load_menu_cache(book_id):
         try:
             d = json.load(open(p, encoding="utf-8"))
             # samples 格式: {"1":"第001集_xxx", ...}
-            # cache 格式:   {"_ts":..,"meta":..,"sections":{"1":..}}
+            # cache 格式:   {"_ts":..,"meta":{"total":N},"sections":{"1":..}}
             raw = d.get("sections") if isinstance(d, dict) and "sections" in d else d
-            if raw:
-                return {int(k): v for k, v in raw.items() if str(k).isdigit()}
+            if not raw:
+                continue
+            secs = {int(k): v for k, v in raw.items() if str(k).isdigit()}
+            if not secs:
+                continue
+            # total 优先取缓存里记录的真实总集数(meta.total)，否则退回已缓存的最大 section 号
+            total = None
+            if isinstance(d, dict):
+                total = (d.get("meta") or {}).get("total")
+            if not total:
+                total = max(secs)  # 至少不要比已有集数还小
+            return int(total), secs
         except Exception:
             continue
     return None
@@ -108,9 +118,10 @@ def get_all_sections(book_id, verbose=True, use_cache=True):
     if use_cache:
         cached = _load_menu_cache(book_id)
         if cached:
+            total, secs = cached
             if verbose:
-                print(f"  [缓存] {book_id}: {len(cached)} 集")
-            return {"total": len(cached)}, cached
+                print(f"  [缓存] {book_id}: 已缓存 {len(secs)} 集，全书共 {total} 集")
+            return {"total": total}, secs
 
     sections: dict[int, str] = {}
     meta = {"total": None}
