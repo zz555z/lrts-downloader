@@ -141,18 +141,10 @@ def verify_and_fix(dst_dir, book, book_name=None):
     files = [f for f in os.listdir(dst_dir) if f.endswith(".m4a")]
     result["ep_total"] = len(files)
     try:
+        # get_all_sections 已内置读取抓包缓存(data/samples/menu_)与在线目录
         _, sections = C.get_all_sections(book)
     except Exception:
         sections = {}
-    # 无在线目录时尝试读 sniffer 缓存目录
-    if not sections:
-        cap = os.path.join(C.DATA_DIR, "samples", f"menu_{book}.json")
-        if os.path.exists(cap):
-            try:
-                m = json.load(open(cap, encoding="utf-8"))
-                sections = {int(k): v for k, v in m.items()}
-            except Exception:
-                sections = {}
 
     for f in files:
         m = re.fullmatch(r"第(\d+)集(.*)\.m4a", f)
