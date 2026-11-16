@@ -1,5 +1,5 @@
 # 运行产物
-data/audio/
+data/audio/*
 data/samples/*.jsonl
 
 # 保留空目录
@@ -23,3 +23,5 @@ venv/
 # 抓包缓存(目录/书名)
 data/samples/menu_*.json
 data/samples/name_*.json
+
+!data/audio/.PROTECTED

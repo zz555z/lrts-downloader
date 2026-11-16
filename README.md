@@ -246,6 +246,8 @@ python cli.py menu --book 43913 --show 20
   - `data/audio/<书名>/` —— 下载的音频
   - `data/samples/` —— 抓包样本（`req_samples.jsonl`）与目录/书名缓存（`menu_*` / `name_*`）
 - **下载是纯增量的**：已存在的集一律跳过，工具**从不主动删除**已下载的音频。
+- **`data/audio` 受保护**：目录内有 `.PROTECTED` 标记，`protect.safe_remove()` 会拒绝删除
+  该目录下的任何内容，避免误删已下载音频（这些音频耗费了流量/时间）。
 - `_failed.txt`：记录失败集号；重跑同一命令会自动补下。
 - `_manifest.json`：每本书的元信息（书名、bookId、集数、大小）。
 
