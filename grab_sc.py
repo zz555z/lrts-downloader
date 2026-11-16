@@ -126,12 +126,20 @@ def sample_count():
         return sum(1 for _ in f)
 
 
-def latest_batch_sample():
-    """返回最新一条 batchGetListenPath 样本 dict，没有返回 None。"""
+def latest_batch_sample(after_count=0):
+    """返回【第 after_count 行之后】新增记录里最新的 batchGetListenPath 样本。
+
+    after_count>0 时只扫描新写入的行，避免把抓包开始前的历史旧样本当成"本次抓到"。
+    没有返回 None。
+    """
     if not os.path.exists(SAMPLES):
         return None
     best = None
+    idx = 0
     for line in open(SAMPLES, encoding="utf-8", errors="replace"):
+        idx += 1
+        if idx <= after_count:
+            continue
         try:
             d = json.loads(line)
         except Exception:
@@ -210,15 +218,14 @@ def main():
         while waited < args.timeout:
             time.sleep(1)
             waited += 1
+            # 只认抓包开始(baseline)之后新写入的 batchGetListenPath，避免用历史旧样本
+            smp = latest_batch_sample(after_count=baseline)
+            if smp:
+                got = smp
+                break
             cur = sample_count()
-            if cur > baseline:
-                smp = latest_batch_sample()
-                if smp:
-                    got = smp
-                    break
-                # 有新增但还不是 batchGetListenPath，继续等
-                if waited % 5 == 0:
-                    print(f"  …已记录 {cur - baseline} 条请求，继续等你点播放")
+            if cur > baseline and waited % 5 == 0:
+                print(f"  …已记录 {cur - baseline} 条请求，但还没出现播放请求，继续等你点播放")
             elif waited % 15 == 0:
                 print(f"  …已等待 {waited}s（还没抓到播放请求，请确认已点播放）")
 
