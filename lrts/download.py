@@ -116,6 +116,34 @@ def download_one(item, dst_dir, sec_to_name, book_name):
     return sec, None, 0, f"ERR {type(last).__name__}:{last}"
 
 
+def fetch_name_from_sample(book, samples_path=SAMPLES):
+    """从抓包样本里找该书的 bookInfoPage 请求，用其 sc 现调一次拿书名。失败返回 None。"""
+    best = None
+    if not os.path.exists(samples_path):
+        return None
+    for line in open(samples_path, encoding="utf-8", errors="replace"):
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        p = d.get("path") or ""
+        if "bookInfoPage" in p and f"id={book}" in p:
+            if best is None or d.get("ts", 0) > best.get("ts", 0):
+                best = d
+    if not best:
+        return None
+    try:
+        hdrs = {k: v for k, v in best["headers"].items()
+                if k not in ("Host", "Content-Length", "Accept-Encoding", "Connection")}
+        _, raw = http(f"https://{best['host']}{best['path']}", headers=hdrs,
+                      timeout=20, retries=1)
+        j = json.loads(raw.decode())
+        det = (j.get("data") or {}).get("detail") or {}
+        return det.get("name")
+    except Exception:
+        return None
+
+
 def download_book(book, start=1, end=0, dry=False, no_menu=False,
                   samples_path=SAMPLES, name=None):
     """下载一本书。返回统计 dict。
@@ -129,7 +157,7 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
     if age > 55:
         print("[!] 警告：sc 可能已过期，建议先在 App 播放一集再跑")
 
-    book_name = name or C.get_book_name(book)
+    book_name = name or C.get_book_name(book) or fetch_name_from_sample(book)
     sections = {}
     total = 0
     if no_menu:

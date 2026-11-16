@@ -103,6 +103,15 @@ def _capture_menu(flow):
     if "bookInfoPage" in (flow.request.path or ""):
         det = data.get("detail") or {}
         book = det.get("id")
+        # 顺手存书名，供下载器给目录命名（H5 页面常 404，App 接口最可靠）
+        if book and det.get("name"):
+            try:
+                json.dump({"name": det["name"]},
+                          open(os.path.join(SAMPLES_DIR, f"name_{book}.json"), "w",
+                               encoding="utf-8"), ensure_ascii=False)
+                print(f"[name] 记录书名 book={book}: {det['name']}")
+            except Exception:
+                pass
         for t in data.get("tabList") or []:
             if t.get("name") == "目录":
                 items = (t.get("data") or {}).get("tracks") or []

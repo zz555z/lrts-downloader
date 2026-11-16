@@ -140,6 +140,15 @@ def get_book_name(book_id):
                         return j["book"]
                 except Exception:
                     pass
+    # sniffer 抓 bookInfoPage 时缓存的书名（最可靠，App 接口不受 H5 风控影响）
+    sp = os.path.join(os.path.dirname(CACHE_DIR), "samples", f"name_{book_id}.json")
+    if os.path.exists(sp):
+        try:
+            j = json.load(open(sp, encoding="utf-8"))
+            if j.get("name"):
+                return j["name"]
+        except Exception:
+            pass
     cp = os.path.join(CACHE_DIR, f"name_{book_id}.json")
     if os.path.exists(cp):
         try:
