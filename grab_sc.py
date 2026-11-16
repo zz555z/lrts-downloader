@@ -229,20 +229,115 @@ def main():
             print(f" sc = {sc[:16]}…")
             print(f" 请求时间 = {time.strftime('%H:%M:%S', time.localtime(ts))}（{age:.0f}s 前）")
             print("✅" * 30)
-            print(f"\n下一步下载整本：\n  python cli.py dl --book {book}\n")
-            return 0
+            return ("got", book)
         else:
             print(f"\n[!] {args.timeout}s 内没抓到 batchGetListenPath 请求。")
             print("    请确认：1) mitmproxy 证书已信任 2) App 真的开始播放了 3) 代理确实生效")
-            return 1
+            return ("fail", None)
     except KeyboardInterrupt:
         interrupted = True
         print("\n[!] 已中断")
-        return 130
+        return ("interrupted", None)
     finally:
         cleanup()
         print("[*] 收尾完成，网络已恢复正常。")
 
 
+def _run_download(book):
+    """抓完 sc 后直接进入下载（交互选范围），全自动串起来。"""
+    print("\n" + "=" * 60)
+    print(f" 开始下载 bookId = {book}")
+    print("=" * 60)
+    from lrts import common as C
+    from lrts import download as D
+    # 询问下载范围（终端交互；非 tty 时默认全本）
+    start, end = 1, 0
+    total = 0
+    if sys.stdin.isatty():
+        try:
+            meta, _ = C.get_all_sections(book, verbose=False)
+            total = meta.get("total") or 0
+        except Exception:
+            pass
+        start, end = _ask_range(total)
+    else:
+        print("[*] 非交互环境，默认下载全本")
+    try:
+        D.download_book(book, start=start, end=end)
+    except SystemExit as e:
+        print(f"[!] 下载中止：{e}")
+        return 1
+    except Exception as e:      # noqa: BLE001
+        print(f"[!] 下载出错：{type(e).__name__}: {e}")
+        return 1
+    return 0
+
+
+def _ask_range(total):
+    """询问下载范围（与 cli.py 中一致）。"""
+    total_txt = f"（全书共 {total} 集）" if total else ""
+    print("\n要下载多少集？" + total_txt)
+    print("  1) 全本")
+    print("  2) 自定义范围（如 1-2 表示第1集到第2集）")
+    eof_streak = 0
+    while True:
+        try:
+            line = input("请输入 1 或 2 后回车：")
+        except EOFError:
+            print("\n[!] 输入已结束，默认下载全本")
+            return 1, (total or 0)
+        choice = line.strip()
+        if choice == "":
+            eof_streak += 1
+            if eof_streak >= 3:
+                print("\n[!] 连续无输入，默认下载全本")
+                return 1, (total or 0)
+            continue
+        eof_streak = 0
+        if choice == "1":
+            return 1, (total or 0)
+        if choice == "2":
+            while True:
+                s = _input_or_none("请输入起始集号：")
+                if s is None:
+                    print("\n[!] 输入已结束，默认下载全本")
+                    return 1, (total or 0)
+                e = _input_or_none("请输入结束集号：")
+                if e is None:
+                    print("\n[!] 输入已结束，默认下载全本")
+                    return 1, (total or 0)
+                try:
+                    start, end = int(s.strip()), int(e.strip())
+                except ValueError:
+                    print("  请输入数字，例如起始 1、结束 2")
+                    continue
+                if start < 1 or end < start:
+                    print(f"  范围不合法：应满足 1 <= 起始 <= 结束（你输入 {start}-{end}）")
+                    continue
+                if total and end > total:
+                    print(f"  结束集号超过全书总集数 {total}，已按 {total} 处理")
+                    end = total
+                return start, end
+        print("  请输入 1 或 2")
+
+
+def _input_or_none(prompt):
+    """input() 的包装：EOF 时返回 None。"""
+    try:
+        return input(prompt)
+    except EOFError:
+        return None
+
+
+def run():
+    """程序主入口：抓 sc → 自动下载。"""
+    res = main()           # main 内部 handle 抓包+清理，返回 (status, book)
+    status, book = res if isinstance(res, tuple) else (res, None)
+    if status == "got" and book:
+        rc = _run_download(book)
+        return rc
+    return 0 if status == 0 else (130 if status == "interrupted" else 1)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
