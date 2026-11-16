@@ -106,6 +106,21 @@ def _load_menu_cache(book_id):
     return None
 
 
+def print_menu_rate_limit_hint():
+    """目录接口被限流时的统一提示：引导用户去 App 多滑几页目录（被动抓取，不限流）。"""
+    print("\n" + "!" * 60)
+    print(" ⚠ 目录接口被限流了（非法请求AA），暂时拿不到章节名。")
+    print("")
+    print(" 👉 解决办法：打开【懒人听书 App】这本书，在目录页**向下多滑几章**")
+    print("    （滑到你想要下载的集数附近），然后重新运行本程序 / 或跑")
+    print("    `python cli.py rename --book <书号>`。")
+    print("    程序会从 App 的请求里被动缓存章节名 —— 这是 App 自身流量，")
+    print("    **不会额外请求、不会再被限流**。")
+    print("")
+    print(" （音频本身不受影响，可以先照常下载，章节名稍后补。）")
+    print("!" * 60 + "\n")
+
+
 def get_all_sections(book_id, verbose=True, use_cache=True):
     """拉全书目录，返回 (meta, sections)。
 
@@ -130,9 +145,13 @@ def get_all_sections(book_id, verbose=True, use_cache=True):
         j = fetch_menu_page(book_id, page)
         st = j.get("status")
         if page == 1 and st != 0:
+            msg = j.get("msg") or ""
+            rate_limited = (st == 114) or ("非法请求" in msg) or ("验证失败" in msg)
+            if rate_limited:
+                print_menu_rate_limit_hint()
             raise RuntimeError(
-                f"getBookMenu 返回异常 status={st} msg={j.get('msg')} "
-                f"（可能触发风控/非法请求AA，请稍后再试，或先在 App 播放一集）")
+                f"getBookMenu 返回异常 status={st} msg={msg}"
+                f"（{'触发了目录接口频率风控' if rate_limited else '接口异常'}）")
         if page == 1:
             meta["total"] = j.get("sections")
         lst = j.get("list") or []
