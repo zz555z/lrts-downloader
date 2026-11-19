@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import time
@@ -80,7 +81,6 @@ def request_batch(host, path, headers, base, book, secs, retries=4):
 
 def _already_have(dst_dir, sec):
     """已存在且体积正常则返回该路径（容忍带/不带标题两种命名）。"""
-    import glob
     for p in glob.glob(os.path.join(dst_dir, f"第{sec}集*.m4a")):
         if os.path.getsize(p) > 10000:
             return p
@@ -88,7 +88,10 @@ def _already_have(dst_dir, sec):
 
 
 def download_one(item, dst_dir, sec_to_name, book_name):
-    """下载单集，返回 (section, path|None, size, status)。"""
+    """下载单集，返回 (section, path|None, size, status)。
+
+    采用流式写入（不把整个文件读进内存），并发下载时内存占用平稳。
+    """
     url = item.get("path")
     sec = item.get("section")
     if not url:
@@ -100,15 +103,8 @@ def download_one(item, dst_dir, sec_to_name, book_name):
     last = None
     for attempt in range(RETRY_PER_EPISODE + 1):
         try:
-            _, data = http(url, headers={"User-Agent": C.UA}, timeout=90,
-                           retries=1, direct=True)
-            if len(data) < 1000:
-                raise RuntimeError(f"文件过小 {len(data)}B")
-            tmp = fn + ".part"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, fn)
-            return sec, fn, len(data), "ok"
+            size = C.http_stream_to_file(url, fn, timeout=90, retries=1)
+            return sec, fn, size, "ok"
         except Exception as e:      # noqa: BLE001
             last = e
             if attempt < RETRY_PER_EPISODE:
@@ -116,11 +112,8 @@ def download_one(item, dst_dir, sec_to_name, book_name):
     return sec, None, 0, f"ERR {type(last).__name__}:{last}"
 
 
-def fetch_total_from_sample(book, samples_path=SAMPLES):
-    """从抓包样本里找该书的 bookInfoPage / ClientGetBookResource，用其 sc 现调拿真实总集数。
-
-    目录接口被限流时，靠这个兜底确定"全本"到底多少集。失败返回 None。
-    """
+def _latest_sample_matching(test, samples_path=SAMPLES):
+    """扫描样本文件，返回满足 test(record) 的最新（ts 最大）一条记录，无则 None。"""
     if not os.path.exists(samples_path):
         return None
     best = None
@@ -130,23 +123,42 @@ def fetch_total_from_sample(book, samples_path=SAMPLES):
             d = json.loads(line)
         except Exception:
             continue
-        p = d.get("path") or ""
-        hit = (("bookInfoPage" in p) or ("getbookresource" in p.lower())) and (f"id={book}" in p or f"bookId={book}" in p)
-        if hit and d.get("ts", 0) > best_ts:
+        if test(d) and d.get("ts", 0) > best_ts:
             best, best_ts = d, d.get("ts", 0)
-    if not best:
+    return best
+
+
+def _replay_sample(sample, timeout=20):
+    """用样本自带的 headers 现调一次该 URL，返回解析后的 JSON；失败返回 None。"""
+    if not sample:
         return None
     try:
-        hdrs = {k: v for k, v in best["headers"].items()
+        hdrs = {k: v for k, v in sample["headers"].items()
                 if k not in ("Host", "Content-Length", "Accept-Encoding", "Connection")}
-        _, raw = http(f"https://{best['host']}{best['path']}", headers=hdrs,
-                      timeout=20, retries=1)
-        j = json.loads(raw.decode())
-        if "bookInfoPage" in best["path"]:
-            return ((j.get("data") or {}).get("detail") or {}).get("sections")
-        return j.get("sections")
+        _, raw = http(f"https://{sample['host']}{sample['path']}", headers=hdrs,
+                      timeout=timeout, retries=1)
+        return json.loads(raw.decode())
     except Exception:
         return None
+
+
+def fetch_total_from_sample(book, samples_path=SAMPLES):
+    """从抓包样本里找该书的 bookInfoPage / ClientGetBookResource，用其 sc 现调拿真实总集数。
+
+    目录接口被限流时，靠这个兜底确定"全本"到底多少集。失败返回 None。
+    """
+    def _hit(d):
+        p = d.get("path") or ""
+        return (("bookInfoPage" in p) or ("getbookresource" in p.lower())) and \
+               (f"id={book}" in p or f"bookId={book}" in p)
+
+    best = _latest_sample_matching(_hit, samples_path)
+    j = _replay_sample(best)
+    if not j:
+        return None
+    if "bookInfoPage" in best["path"]:
+        return ((j.get("data") or {}).get("detail") or {}).get("sections")
+    return j.get("sections")
 
 
 def detect_total_via_probe(host, path, headers, base, book, start=1, cap=20000):
@@ -158,58 +170,65 @@ def detect_total_via_probe(host, path, headers, base, book, start=1, cap=20000):
     def probe_sections(secs):
         try:
             pl = request_batch(host, path, headers, base, book, secs)
-        except Exception:
-            return []
+        except Exception as e:
+            print(f"  [探测] 请求 {secs[0]}..{secs[-1]} 失败：{e}")
+            return None
         return [it.get("section") for it in pl if it.get("section") is not None]
 
     step = 200
     last = start - 1
     s = start
+    seen = set()            # 防止同样的 (s, step) 反复探测，杜绝来回震荡
+    empty_streak = 0
     print(f"  [探测] 从第 {start} 集起，步长 {step}…")
     while s <= cap:
-        secs = list(range(s, s + step))
+        key = (s, step)
+        if key in seen:
+            break
+        seen.add(key)
+        secs = list(range(s, min(s + step, cap + 1)))
         good = probe_sections(secs)
+        if good is None:
+            # 网络失败不是目录为空；同一窗口重试，避免把暂时故障当作全书末尾。
+            retries_left = 2
+            while retries_left and good is None:
+                time.sleep(1)
+                good = probe_sections(secs)
+                retries_left -= 1
+            if good is None:
+                return None
         if good:
             last = max(good)
+            empty_streak = 0
             print(f"  [探测] 第 {s}-{s+step-1} 有效，最大 section={last}")
-            s += step
-            # 连续有效可加大步长（加速），但要留余量
-            step = min(step * 2, 1000)
+            if len(good) < len(secs):
+                # 部分响应不能证明窗口末尾就是全书末尾；从最大已知集号后小步补探。
+                s = last + 1
+                step = BATCH
+            else:
+                s += step
+                step = min(step * 2, 1000)  # 连续完整窗口可加大步长
         else:
-            if step <= BATCH:
-                break  # 已到最小步长且空，说明到头了
-            # 回溯：从 last+1 用小步重探
-            s = last + 1
-            step = max(step // 2, BATCH)
+            empty_streak += 1
+            if empty_streak >= 2:
+                break                        # 连续两个有效空窗口才认为已越过末尾
+            s += step
+            step = BATCH
     return last if last >= start else None
 
 
 def fetch_name_from_sample(book, samples_path=SAMPLES):
     """从抓包样本里找该书的 bookInfoPage 请求，用其 sc 现调一次拿书名。失败返回 None。"""
-    best = None
-    if not os.path.exists(samples_path):
-        return None
-    for line in open(samples_path, encoding="utf-8", errors="replace"):
-        try:
-            d = json.loads(line)
-        except Exception:
-            continue
+    def _hit(d):
         p = d.get("path") or ""
-        if "bookInfoPage" in p and f"id={book}" in p:
-            if best is None or d.get("ts", 0) > best.get("ts", 0):
-                best = d
-    if not best:
+        return "bookInfoPage" in p and f"id={book}" in p
+
+    best = _latest_sample_matching(_hit, samples_path)
+    j = _replay_sample(best)
+    if not j:
         return None
-    try:
-        hdrs = {k: v for k, v in best["headers"].items()
-                if k not in ("Host", "Content-Length", "Accept-Encoding", "Connection")}
-        _, raw = http(f"https://{best['host']}{best['path']}", headers=hdrs,
-                      timeout=20, retries=1)
-        j = json.loads(raw.decode())
-        det = (j.get("data") or {}).get("detail") or {}
-        return det.get("name")
-    except Exception:
-        return None
+    det = (j.get("data") or {}).get("detail") or {}
+    return det.get("name")
 
 
 def download_book(book, start=1, end=0, dry=False, no_menu=False,
@@ -219,6 +238,10 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
     name: 自定义输出目录名（书名）。None 时尝试自动获取。
     """
     book = str(book)
+    if start < 1 or end < 0 or (end and end < start):
+        raise SystemExit(f"下载范围无效：必须满足 start >= 1 且 end=0 或 end >= start（收到 {start}..{end}）")
+    if start > 200000 or end > 200000:
+        raise SystemExit(f"集号过大（程序上限 200000）：收到 {start}..{end}")
     host, path, headers, base, ts = load_fresh(samples_path)
     age = (time.time() - ts) / 60 if ts else 0
     print(f"[*] fresh sc 生成于 {time.strftime('%H:%M:%S', time.localtime(ts))}（{age:.0f} 分钟前）")
@@ -338,7 +361,6 @@ def download_book(book, start=1, end=0, dry=False, no_menu=False,
 def _write_manifest(dst_dir, book, book_name, count):
     mf = os.path.join(dst_dir, "_manifest.json")
     try:
-        import glob
         n = len(glob.glob(os.path.join(dst_dir, "第*集*.m4a")))
         total = sum(os.path.getsize(p) for p in glob.glob(os.path.join(dst_dir, "第*集*.m4a")))
         json.dump({"book": book_name, "bookId": str(book), "episodes": n,

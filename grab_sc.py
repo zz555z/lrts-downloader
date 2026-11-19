@@ -63,11 +63,25 @@ def set_proxy(service, port, enable=True):
         print(f"[!] 非 macOS：请手动把系统代理设为 {host}:{p}（关闭时留空）")
         return
     print(f"[*] {'开启' if enable else '关闭'}系统代理 {service} -> {host or '(空)'}:{p}")
-    _run(["sudo", "networksetup", "-setwebproxy", service, host, p])
-    _run(["sudo", "networksetup", "-setsecurewebproxy", service, host, p])
+    commands = [
+        ["sudo", "networksetup", "-setwebproxy", service, host, p],
+        ["sudo", "networksetup", "-setsecurewebproxy", service, host, p],
+    ]
     if not enable:
-        _run(["sudo", "networksetup", "-setwebproxystate", service, "off"])
-        _run(["sudo", "networksetup", "-setsecurewebproxystate", service, "off"])
+        commands.extend([
+            ["sudo", "networksetup", "-setwebproxystate", service, "off"],
+            ["sudo", "networksetup", "-setsecurewebproxystate", service, "off"],
+        ])
+    errors = []
+    for cmd in commands:
+        try:
+            result = _run(cmd)
+            if result.returncode:
+                errors.append(f"{cmd[-2:]} 返回码 {result.returncode}")
+        except Exception as e:
+            errors.append(f"{cmd[-2:]}: {e}")
+    if errors:
+        raise RuntimeError("系统代理设置未完全成功：" + "; ".join(errors))
 
 
 def proxy_is_open(service):
@@ -97,24 +111,35 @@ def start_mitm(port, confdir=None):
     confdir = confdir or DEFAULT_CONFDIR
     os.makedirs(confdir, exist_ok=True)
     logf = open(os.path.join(confdir, "mitm.log"), "w")
-    proc = subprocess.Popen(
-        [mitm, "-s", SNIFFER, "--listen-port", str(port), "--set", f"confdir={confdir}"],
-        stdout=logf, stderr=subprocess.STDOUT)
-    # 等端口就绪
-    for _ in range(20):
-        time.sleep(0.3)
-        if proc.poll() is not None:
-            raise SystemExit("mitmdump 启动失败，请检查是否已安装并信任证书")
-        try:
-            import socket
-            s = socket.create_connection(("127.0.0.1", port), timeout=0.5)
-            s.close()
-            print(f"[*] mitmproxy 已启动（: {port}，日志 {os.path.join(confdir,'mitm.log')}）")
-            return proc, logf
-        except OSError:
-            continue
-    proc.terminate()
-    raise SystemExit("mitmproxy 端口未就绪")
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [mitm, "-s", SNIFFER, "--listen-port", str(port), "--set", f"confdir={confdir}"],
+            stdout=logf, stderr=subprocess.STDOUT)
+        # 等端口就绪
+        for _ in range(20):
+            time.sleep(0.3)
+            if proc.poll() is not None:
+                raise SystemExit("mitmdump 启动失败，请检查是否已安装并信任证书")
+            try:
+                import socket
+                s = socket.create_connection(("127.0.0.1", port), timeout=0.5)
+                s.close()
+                print(f"[*] mitmproxy 已启动（: {port}，日志 {os.path.join(confdir,'mitm.log')}）")
+                return proc, logf
+            except OSError:
+                continue
+        raise SystemExit("mitmproxy 端口未就绪")
+    except BaseException:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+                proc.wait(timeout=5)
+        logf.close()
+        raise
 
 
 # ---------------------------------------------------------------- 检测抓包
@@ -164,7 +189,7 @@ def main():
     ap.add_argument("--service", default="Wi-Fi", help="网络服务名（macOS，默认 Wi-Fi）")
     ap.add_argument("--timeout", type=int, default=180, help="等待播放的最长秒数")
     ap.add_argument("--confdir", default=None,
-                    help="mitmproxy 配置目录（默认自动复用已受信任的证书目录）")
+                    help="mitmproxy 配置目录（默认用项目内 .mitmproxy，首次会自动生成并引导安装证书）")
     args = ap.parse_args()
 
     baseline = sample_count()
@@ -173,22 +198,31 @@ def main():
     print("=" * 60)
 
     mitm = logf = None
-    proxy_on = False
+    proxy_attempted = False
+    cleanup_errors = []
 
     def cleanup():
-        nonlocal proxy_on
         print("\n[*] 清理：关闭系统代理、停止 mitmproxy …")
-        if proxy_on:
-            set_proxy(args.service, args.port, enable=False)
-            proxy_on = False
-        if mitm and mitm.poll() is None:
-            mitm.terminate()
+        if proxy_attempted:
             try:
-                mitm.wait(timeout=5)
-            except Exception:
-                mitm.kill()
-        if logf:
-            logf.close()
+                set_proxy(args.service, args.port, enable=False)
+            except Exception as e:
+                cleanup_errors.append(f"关闭系统代理失败：{e}")
+        try:
+            if mitm and mitm.poll() is None:
+                mitm.terminate()
+                try:
+                    mitm.wait(timeout=5)
+                except Exception:
+                    mitm.kill()
+                    mitm.wait(timeout=5)
+        except Exception as e:
+            cleanup_errors.append(f"停止 mitmproxy 失败：{e}")
+        finally:
+            if logf:
+                logf.close()
+        for error in cleanup_errors:
+            print(f"[!] {error}")
 
     try:
         confdir = resolve_confdir(args.confdir)
@@ -198,8 +232,8 @@ def main():
             print("\n[!] 未完成证书信任，无法抓取 HTTPS。已退出。")
             return 2
         mitm, logf = start_mitm(args.port, confdir)
+        proxy_attempted = True
         set_proxy(args.service, args.port, enable=True)
-        proxy_on = True
 
         print("\n" + "▶" * 30)
         print(" 现在请打开【懒人听书 App】，找到你想下载的书，")
@@ -248,7 +282,10 @@ def main():
         return ("interrupted", None)
     finally:
         cleanup()
-        print("[*] 收尾完成，网络已恢复正常。")
+        if cleanup_errors:
+            print("[!] 收尾未完全成功，请检查上面的错误并确认系统代理已关闭。")
+        else:
+            print("[*] 收尾完成，已尝试恢复网络代理设置。")
 
 
 def _run_download(book):

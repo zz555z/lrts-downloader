@@ -80,8 +80,9 @@ def cmd_list(args):
                 episodes = int(j.get("episodes") or 0)
             except Exception:
                 pass
-        n = len(glob.glob(os.path.join(dp, "第*集*.m4a")))
-        size = sum(os.path.getsize(p) for p in glob.glob(os.path.join(dp, "第*集*.m4a")))
+        files = glob.glob(os.path.join(dp, "第*集*.m4a"))
+        n = len(files)
+        size = sum(os.path.getsize(p) for p in files)
         rows.append((d, bid, n or episodes, size))
     if not rows:
         print("还没有下载任何书（data/audio 为空）")

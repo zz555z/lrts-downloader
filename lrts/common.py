@@ -13,6 +13,7 @@ import os
 import re
 import ssl
 import time
+import urllib.error
 import urllib.request
 
 # ---- 基础配置 -------------------------------------------------------------
@@ -54,10 +55,60 @@ def http(url, *, data=None, headers=None, method=None, timeout=30,
             else:
                 r = urllib.request.urlopen(req, timeout=timeout, context=ctx)
             return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            last = e
+            # 4xx 多为确定性失败（除 429 限流），重试无意义，直接抛
+            if 400 <= e.code < 500 and e.code != 429:
+                raise
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
         except Exception as e:          # noqa: BLE001 - 需要兜住所有网络异常
             last = e
             if attempt < retries - 1:
                 time.sleep(backoff ** attempt)
+    raise last
+
+
+def http_stream_to_file(url, filepath, *, headers=None, timeout=90,
+                        retries=2, backoff=1.5, min_bytes=1000, chunk=1 << 16):
+    """流式下载到文件（不把整个文件读进内存）。
+
+    先写 `<filepath>.part`，成功后原子替换为 filepath，避免半截文件残留。
+    返回写入字节数；小于 min_bytes 视为失败抛异常。
+    direct=True（不走系统代理）用于音频直链。
+    """
+    hdrs = {"User-Agent": UA, **(headers or {})}
+    last = None
+    for attempt in range(retries):
+        tmp = filepath + ".part"
+        r = None
+        try:
+            req = urllib.request.Request(url, headers=hdrs)
+            r = OPENER_DIRECT.open(req, timeout=timeout)
+            total = 0
+            with open(tmp, "wb") as f:
+                while True:
+                    buf = r.read(chunk)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    total += len(buf)
+            if total < min_bytes:
+                raise RuntimeError(f"文件过小 {total}B")
+            os.replace(tmp, filepath)
+            return total
+        except Exception as e:          # noqa: BLE001
+            last = e
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+        finally:
+            if r is not None:
+                r.close()
     raise last
 
 
@@ -323,11 +374,14 @@ def ask_range(total):
                 except ValueError:
                     print("  请输入数字，例如起始 1、结束 2")
                     continue
-                if start < 1 or end < start:
-                    print(f"  范围不合法：应满足 1 <= 起始 <= 结束（你输入 {start}-{end}）")
+                if start < 1 or end < start or start > 200000:
+                    print(f"  范围不合法：应满足 1 <= 起始 <= 结束且起始不超过 200000（你输入 {start}-{end}）")
                     continue
                 if total and end > total:
                     print(f"  结束集号超过全书总集数 {total}，已按 {total} 处理")
                     end = total
+                if not total and end > 200000:
+                    print(f"  结束集号 {end} 过大，请确认（上限 200000）")
+                    continue
                 return start, end
         print("  请输入 1 或 2")
